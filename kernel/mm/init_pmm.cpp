@@ -101,7 +101,7 @@ auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
     // much, which makes every watermark slightly lower than it will want to be.
     // Recomputing belongs with whatever first has a reason to care, and that is
     // the reclaimer.
-    PmNode::setup_watermarks();
+    PmZone::setup_all_watermarks();
 }
 
 /// The object caches and kmalloc, on top of the page allocator init_pmm() left

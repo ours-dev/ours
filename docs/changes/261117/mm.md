@@ -440,3 +440,46 @@ None.
 - Which invariant does `for_each_node()` depend on, and what happens when it breaks?
 - Why does Possible need no registered node?
 - Why was asserting chosen over a key on the writer?
+
+## The machine-wide watermark setup belongs to the zone table (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::setup_all_watermarks()`, a static beside `create_all()` and `for_each()`, with `isqrt()` and `machine_reserve_frames()`; the per-zone `setup_watermarks()` and `setup_lowmem_reserve()` are private again and take no key
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node_init.cpp` — `PmNode::setup_watermarks()` and the two helpers are gone
+- `kernel/mm/init_pmm.cpp` — calls `PmZone::setup_all_watermarks()`
+- `kernel/mm/include/ours/mm/priv/layer_keys.hpp`, `.agents/skills/kernel-design/references/mm.md` — `ZoneLayerKey` no longer covers the watermark setup
+
+**Symptom**
+Latent, from the review's minor list. `PmNode::setup_watermarks()` touched no node: it summed every zone's managed frames, worked out the machine's reserve and gave each zone its share. It sat on `PmNode` so that it could reach `PmZone`'s private setup, first as a friend and since the passkeys through `ZoneLayerKey`.
+
+**Cause**
+A function belongs with the data it works on. The zone table already has its other machine-wide statics (`create_all()`, `for_each()`, the `TABLE` itself, a decision of 2026-10-29), and the setup reads and writes zones alone; with it there, the per-zone steps need no key and can be private.
+
+**Change**
+
+```cpp
+// init_pmm()
+PmZone::setup_all_watermarks();    // was PmNode::setup_watermarks()
+```
+
+The same arithmetic, order (every zone's watermarks before any low-zone reserve) and guard for a machine with no managed memory; only where it lives changed.
+
+**Reference**
+Linux keeps the same step in `mm/page_alloc.c`: `setup_per_zone_wmarks()` and `setup_per_zone_lowmem_reserve()`, file-scope functions over every zone, with `calculate_min_free_kbytes()` for the machine's reserve.
+
+**Verification**
+On the tree that holds this and the change before, in the `feat/pmm-redesign` worktree: `verify` on the default and the four-node machine, dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the zones' floors still hold 14682 frames, so every watermark came out as before. clang-tidy reports nothing in the changed sources. A narrow pre-commit review of both changes found the design reference still saying the watermark setup takes a `ZoneLayerKey` (corrected).
+
+**Deliberately not done**
+Moving `bootstrap()` and `create_nodes()`: they use `PmNode`'s private constructor and `init()`.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 18, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did `setup_watermarks()` live on `PmNode`, and why does that reason no longer hold?
+- What does the zone table's `setup_all_watermarks()` compute, and in which order?
+- Why can the per-zone steps be private now?

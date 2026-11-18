@@ -224,16 +224,6 @@ class PmNode {
   public:
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
 
-    /// Works out how many frames the machine holds back from allocation and
-    /// gives every zone its share of it as three watermarks.
-    ///
-    /// Separate from bootstrap(), and later than it, because it needs numbers
-    /// bootstrap() cannot have yet: a zone's managed total is what is present
-    /// minus what the boot allocator took, and the reservations are only
-    /// counted once init_memmap() has walked them. Called from init_pmm()
-    /// after the handoff, with nothing else running.
-    static auto setup_watermarks() -> void;
-
     /// Why a walk for one block gave nothing: no zone both admitted the request
     /// at the pass's floor and had a block. What status that becomes is the
     /// caller's (ShouldWait after a Low pass a waiting request stops at,

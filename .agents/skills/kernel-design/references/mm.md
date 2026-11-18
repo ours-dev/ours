@@ -314,11 +314,13 @@ a step is in, the code still has the shape described above.
   passkeys (review items 25 and 40, the user's choice of 2026-11-17,
   `ours/mm/priv/layer_keys.hpp`): the node layer's pair takes a
   `NodeLayerKey` only the pipeline (`priv::Pipeline`, defined in `pmm.cpp`)
-  makes, and the zone layer's pair, `adopt()` and its watermark setup take a
-  `ZoneLayerKey` only `PmNode` and the pipeline make. A friend would open
-  every private member; a key opens the calls. Kernel tests have their own
-  door, `ours/mm/test/layer_keys.hpp`, which nothing else includes.
-  `PmZone::admits()` stays a public query.
+  makes, and the zone layer's pair and `adopt()` take a `ZoneLayerKey` only
+  `PmNode` and the pipeline make. A friend would open every private member;
+  a key opens the calls. Kernel tests have their own door,
+  `ours/mm/test/layer_keys.hpp`, which nothing else includes.
+  `PmZone::admits()` stays a public query. The watermark setup is
+  `PmZone::setup_all_watermarks()`, a static of the zone table beside
+  `create_all()` that needs no key; the per-zone steps are private.
 - The public PMM interface takes primitive parameters, as Linux's
   `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
   count, a node id. Never a compound structure as a parameter; the user

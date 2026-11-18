@@ -152,20 +152,18 @@ class PmZone {
     [[nodiscard]]
     auto adopt(Pfn start, Pfn end, ZoneLayerKey) -> usize;
 
-    /// Scales this zone's three watermarks out of the machine-wide reserve.
+    /// Works out how many frames the machine holds back from allocation and
+    /// gives every zone its share of it as three watermarks, then every
+    /// zone's reserve against the zones above it on its node. The zone
+    /// table's, like create_all() and for_each(): it touches every zone and
+    /// no node.
     ///
-    /// |reserve_frames| is how many frames the machine holds back altogether
-    /// and |managed_total| how many every zone manages between them, so this
-    /// zone takes the share of the reserve that matches its share of the
-    /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
-    /// allocating.
-    auto setup_watermarks(usize reserve_frames, usize managed_total, ZoneLayerKey) -> void;
-
-    /// Works out this zone's reserve against every highest zone type a
-    /// request may allow, from the managed frames of the zones above it on
-    /// its node. Called once, by PmNode::setup_watermarks(), after every
-    /// zone's managed count is final and while no CPU is allocating.
-    auto setup_lowmem_reserve(ZoneLayerKey) -> void;
+    /// Later than create_all(), because it needs numbers that cannot exist
+    /// then: a zone's managed total is what is present minus what the boot
+    /// allocator took, and the reservations are only counted once
+    /// init_memmap() has walked them. Called from init_pmm() after the
+    /// handoff, with nothing else running.
+    static auto setup_all_watermarks() -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
@@ -300,7 +298,7 @@ class PmZone {
     /// How many frames this zone's free count has to stay at or above for an
     /// allocation held to |mark| to be admitted.
     ///
-    /// Zero until PmNode::setup_watermarks() has run, and zero admits
+    /// Zero until setup_all_watermarks() has run, and zero admits
     /// everything -- which is what every zone looks like for the whole of
     /// bring-up, on purpose: there is nothing to hold memory back for before
     /// the allocator is serving anyone.
@@ -348,7 +346,7 @@ class PmZone {
     /// The frames of this zone held back from a request whose highest
     /// allowed zone type is |highest|: a share of what the zones above this
     /// one on the same node manage, up to |highest| (mm::lowmem_reserve()).
-    /// Zero until PmNode::setup_watermarks() has run, and for a |highest| at
+    /// Zero until setup_all_watermarks() has run, and for a |highest| at
     /// or below this zone's own type.
     [[nodiscard]]
     FORCE_INLINE
@@ -394,6 +392,21 @@ class PmZone {
         Contiguous = 1_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    /// Scales this zone's three watermarks out of the machine-wide reserve.
+    ///
+    /// |reserve_frames| is how many frames the machine holds back altogether
+    /// and |managed_total| how many every zone manages between them, so this
+    /// zone takes the share of the reserve that matches its share of the
+    /// memory. Called once, by setup_all_watermarks(), while no CPU is
+    /// allocating.
+    auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
+
+    /// Works out this zone's reserve against every highest zone type a
+    /// request may allow, from the managed frames of the zones above it on
+    /// its node. Called once, by setup_all_watermarks(), after every
+    /// zone's managed count is final and while no CPU is allocating.
+    auto setup_lowmem_reserve() -> void;
 
     /// Every zone, at its node and type; null where a node has no memory of a
     /// type. Written by create_all() alone. A fixed grid of every node the
