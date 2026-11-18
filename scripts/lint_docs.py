@@ -406,7 +406,7 @@ def changed_files(only: Optional[set[str]] = None) -> dict[str, Optional[set[int
     if not gitdiff.has_head(ROOT):  # no commits yet: there is nothing older, so every file is new
         return {p: None for p in git("ls-files", "--cached", "--others", "--exclude-standard").splitlines()
                 if wanted(p)}
-    for line in git("diff", "--name-status", "-M", "HEAD").splitlines():
+    for line in git("diff", "--name-status", "-M", gitdiff.base_rev()).splitlines():
         status, *names = line.split("\t")
         path = names[-1]
         if status.startswith("D") or not wanted(path):

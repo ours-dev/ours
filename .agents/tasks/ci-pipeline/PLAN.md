@@ -18,6 +18,7 @@ Out of scope: everything listed under non-goals in `DESIGN.md` (branch protectio
 | D3 toolchain source | (a) pinned upstream downloads; (b) snapshot of local `prebuilt/` | (a) | None | (a), 2026-11-17 |
 | D4 CD scope | (a) artifacts only; (b) plus Release on `v*` tags; (c) plus nightly | (b) | None | (b), 2026-11-17 |
 | D5 submodule access | (a) fine-grained PAT secret `SUBMODULE_TOKEN`; (b) deploy keys | (a) | None | (a), 2026-11-17 |
+| D6 artifact upload | (a) images and logs every run, ELFs only on failure; (b) everything, 7 days | (a) | None | (a), 2026-11-17 |
 
 Mirrors `DESIGN.md`, where the reasons are. The steps below assume the recommendations; where a different answer changes a step, the step says how.
 

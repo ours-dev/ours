@@ -623,37 +623,69 @@ auto apic_calibrate_clock() -> bool {
 
         apic_hz = u64((longwin.apic_elapsed() - shortwin.apic_elapsed()) / SPAN) * u64(time::HZ);
         tsc_hz = ((longwin.tsc_elapsed() - shortwin.tsc_elapsed()) / SPAN) * u64(time::HZ);
+    } else if (mono_span < Duration::zero()) {
+        // The long window ended earlier than the short one by the clock
+        // source's reading, so the clock source itself is broken and there
+        // is nothing to divide by.
+        log::error("APIC calibration: the clock source ran backwards ({} ns over {} ticks)",
+                   mono_span.count(), SPAN);
+        return false;
     } else {
-        // Cross-check the tick device against the clock source. Two
-        // thresholds, because the errors worth catching and the noise worth
-        // tolerating are an order of magnitude apart: everything that can go
-        // wrong with a tick device is a *factor* (a PIT reload left at 65536
-        // makes the tick 5.5x too long, a doubly-counted tick makes it half,
-        // a stopped device times out), while measurement noise is a few
-        // percent -- under TCG, where the virtual clock follows host
-        // scheduling, successive boots here differed by 7%. So warn at 10%,
-        // and only refuse at 2x.
-        auto const measured_tick = mono_span / SPAN;
+        // Cross-check the tick device against the clock source, and believe
+        // the clock source when they disagree. The frequencies above do not
+        // depend on the tick: hz_of() divides each count by the clock
+        // source's reading of the same window, so the tick only decided how
+        // long the window was, not what the answer is.
+        //
+        // The usual way the two disagree is lost ticks, not a misprogrammed
+        // device. An emulated periodic device fires on host time; when the
+        // emulator is descheduled, the periods it missed are merged into one
+        // interrupt instead of being delivered late, so each counted tick
+        // spans several periods. On a loaded three-core host about three
+        // periods in four were lost (each tick spanned 35-40 ms), and
+        // refusing the calibration then left every CPU without a timer over
+        // a window that was merely longer than planned.
+        //
+        // Measurement noise under emulation is a few percent (successive
+        // idle boots differed by 7%), so only a gap above 10% is reported.
         auto const expected_tick = time::NSEC_PER_TICK;
-        auto const drift = measured_tick > expected_tick ? measured_tick - expected_tick
-                                                         : expected_tick - measured_tick;
+        auto const measured_tick = mono_span / SPAN;
 
         log::info("tick period: {} ns measured by the clock source, {} ns expected",
                   measured_tick.count(), expected_tick.count());
 
-        if (drift * 10 > expected_tick) {
-            log::warn("tick period is {}% off what the clock source says",
-                      (drift * 100) / expected_tick);
+        auto drift = expected_tick - measured_tick;
+        if (measured_tick > expected_tick) {
+            drift = measured_tick - expected_tick;
         }
-        if (drift > expected_tick) {
-            log::error("APIC calibration: the tick device and the clock source disagree by "
-                       "more than a factor of two; the tick is misprogrammed");
-            return false;
+        if (drift * 10 > expected_tick) {
+            // Rounded to the nearest whole period: the endpoints of the two
+            // windows are each up to a period's worth of interrupt latency
+            // apart, so the fraction carries no information.
+            auto const periods = u64((mono_span + expected_tick / 2) / expected_tick);
+            if (measured_tick > expected_tick) {
+                log::warn("APIC calibration not consistent with the clock source: {} ticks "
+                          "spanned {} tick periods, so about {} ticks were lost; using the "
+                          "clock source",
+                          SPAN, periods, periods - u64(SPAN));
+            } else {
+                log::warn("APIC calibration not consistent with the clock source: {} ticks "
+                          "spanned only {} tick periods, so the tick runs fast; using the "
+                          "clock source",
+                          SPAN, periods);
+            }
         }
     }
 
-    if (apic_hz == 0 || tsc_hz == 0) {
-        log::error("APIC calibration: measured a zero frequency");
+    // Every local APIC timer counts a bus or core clock, tens of megahertz
+    // and up. One measured below a megahertz -- fewer than 10'000 counts in
+    // a tick -- means the measurement is wrong, most likely the clock
+    // source's scale, and a timer programmed from it would be off by the
+    // same factor.
+    constexpr auto MIN_APIC_HZ = u64(1'000'000);
+    if (apic_hz < MIN_APIC_HZ || tsc_hz == 0) {
+        log::error("APIC calibration: implausible frequencies, APIC {} Hz, TSC {} Hz", apic_hz,
+                   tsc_hz);
         return false;
     }
 

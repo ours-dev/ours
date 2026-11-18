@@ -1,11 +1,105 @@
+# Build, test and boot every push to the baseline and main, and every pull
+# request into them. Everything the run does is in scripts/ci.py, so a red run
+# is reproduced locally with the command in the "ci" step; this file only
+# checks out, restores caches and uploads what the run produced.
+#
+# Actions are pinned by commit, not tag, because a tag can be moved.
+name: ci
 
-name: CI
-on: [push, pull_request]
+on:
+  push:
+    # ci/** lets a change to this file be tried on a branch of its own before
+    # it reaches the baseline.
+    branches: [main, "baseline/**", "ci/**"]
+  pull_request:
+    branches: [main, "baseline/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-    test:
-        name: Test
-        runs-on: ubuntu-latest
-        steps:
-        - name: Checkout
-          uses: actions/checkout@v2
+  verify:
+    # macOS 26 on Apple silicon. The tools in build/prebuilt.json run from
+    # macOS 15 on (the Homebrew bottles are arm64_sequoia), but the host
+    # tools the build links pair LLVM 23's libc++ headers with the system's
+    # libc++, which exports what those headers call (std::__hash_memory)
+    # only from macOS 26 (docs/repairs/261117/ci.md).
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # check measures from the merge base with the push's base, which
+          # needs the history, and the first push of a branch compares with
+          # origin/main.
+          fetch-depth: 0
+          # Every submodule is a public repository. .gitmodules names the
+          # ours-dev ones by SSH URL, which the action rewrites to https.
+          submodules: recursive
+
+      # The scripts' Python packages (PyYAML, copier), in a virtual
+      # environment because the runner's Homebrew Python refuses a plain pip
+      # install; first on PATH, so every later `python3` is this one.
+      - name: python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      # Saved as soon as it is fetched, not at the end of the job, so a red
+      # run does not download the toolchain again next time.
+      - id: prebuilt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: prebuilt
+          key: prebuilt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build/prebuilt.json') }}
+      - run: python3 scripts/fetch_prebuilt.py
+      - if: steps.prebuilt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: prebuilt
+          key: ${{ steps.prebuilt.outputs.cache-primary-key }}
+
+      # The compiler cache, where build/ccache.conf puts it. Each run saves
+      # its own copy; a run starts from the newest of its branch, else of the
+      # baseline.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/Library/Caches/ours-ccache
+          key: ccache-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-
+            ccache-baseline/
+
+      - name: ci
+        run: python3 scripts/ci.py all --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+      - if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/Library/Caches/ours-ccache
+          key: ccache-${{ github.ref_name }}-${{ github.run_id }}
+
+      # Images, logs and SHA256SUMS every run (a few MB); the unstripped ELFs
+      # (about 140 MB) only when the run failed and someone will debug it.
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ours-${{ github.sha }}
+          path: |
+            out/ci-artifacts
+            !out/ci-artifacts/debug
+          retention-days: 14
+          if-no-files-found: warn
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ours-${{ github.sha }}-debug
+          path: out/ci-artifacts/debug
+          retention-days: 14
+          if-no-files-found: ignore

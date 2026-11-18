@@ -21,6 +21,15 @@ from pathlib import Path
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.M)
 
+# The revision "what changed" is measured from. HEAD for an edit or a commit;
+# CI sets it to the commit a push or a pull request starts from, since there
+# the working tree is HEAD and nothing differs from it (scripts/ci.py).
+BASE_VARIABLE = "OURS_DIFF_BASE"
+
+
+def base_rev() -> str:
+    return os.environ.get(BASE_VARIABLE) or "HEAD"
+
 
 def git_env() -> dict[str, str]:
     """The environment for a git subprocess that has to find its repository from its own
@@ -37,12 +46,13 @@ def git_env() -> dict[str, str]:
 def has_head(top: Path) -> bool:
     """False in a repository with no commits yet, where there is nothing to diff against
     and every file is new."""
-    return subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=top, capture_output=True, env=git_env()).returncode == 0
+    return subprocess.run(["git", "rev-parse", "--verify", "-q", base_rev()], cwd=top, capture_output=True, env=git_env()).returncode == 0
 
 
 def repo_diff(top: Path) -> str:
-    """Everything that differs from HEAD in the working tree, renames detected."""
-    return subprocess.run(["git", "diff", "-U0", "-M", "--no-color", "HEAD"], cwd=top, capture_output=True, text=True, env=git_env()).stdout
+    """Everything that differs from the base (HEAD unless CI says otherwise) in
+    the working tree, renames detected."""
+    return subprocess.run(["git", "diff", "-U0", "-M", "--no-color", base_rev()], cwd=top, capture_output=True, text=True, env=git_env()).stdout
 
 
 def diff_section(diff: str, rel: str) -> str:

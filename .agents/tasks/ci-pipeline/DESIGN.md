@@ -51,6 +51,7 @@ Estimated cost (hosted macOS arm64, unmeasured): about 10 minutes a run, billed 
 | D3 toolchain source | (a) pinned upstream downloads via `fetch_prebuilt.py`; (b) snapshot of the local `prebuilt/` | (a) | None | (a), 2026-11-17 |
 | D4 CD scope | (a) workflow artifacts only; (b) (a) plus a GitHub Release on `v*` tags; (c) (b) plus a nightly release | (b) | None | (b), 2026-11-17 |
 | D5 submodule access | (a) fine-grained PAT, read-only on `lockdep` and `concurrent`, as secret `SUBMODULE_TOKEN`; (b) one deploy key per submodule | (a): one secret; the user creates it | None | (a), 2026-11-17 |
+| D6 artifact upload | (a) images, logs and SHA256SUMS every run, the unstripped ELFs (about 140 MB a run) only on failure; (b) everything every run, kept 7 days | (a): private-repository artifact storage on the free plan is 500 MB | None | (a), 2026-11-17 |
 
 ## Testing and verification
 - `fetch_prebuilt.py` into a scratch `--dest`, then a build and boot against it, proves the pins equal today's toolchain.
