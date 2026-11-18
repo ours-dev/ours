@@ -258,3 +258,38 @@ None.
 - What would a swapped Min and Low have done to every allocation?
 - Why does a struct with designated initialisers stop the swap where two parameters did not?
 - Why is the floor a member of the watermarks rather than of the zone?
+
+## The flat node queries are kept, and the test that only compared them goes (2026-11-18)
+
+**Files**
+- `kernel/tests/pm_node_test.cpp` — `check_node_queries()` no longer compares `mm::node_work_cpus()`, `node_soft_affinity()` and `node_hard_affinity()` with `PmNode`'s members; the file's coverage list says so
+- `docs/repairs/261029/mm.md` — item 3 says where the machine-wide sums live is decided with the free count's owner (review minor item 6)
+
+**Symptom**
+From the review's minor list: the flat `node_*` queries in `pmm.hpp` are a second door to `PmNode`, and a test existed only to check that the two doors agree for a node that exists, which they do by construction; and the machine-wide sums (`approx_free_frame_count()`, `zone_floor_frame_count()`) are free functions over the zone table.
+
+**Cause**
+Not defects, the user decided (item 54, option A; item 6, option A). The flat style is the user's D2(a) choice, and what the forwarders add over the members, an empty answer for an absent node, has a test of its own (`AbsentNodesAnswerNothing`); a check that compares a function with its own body checks nothing. The sums stay where they are until the owner of the machine's free count is chosen, with numbers, in the performance item that already asks it.
+
+**Change**
+The compare-only half of the test removed; the repair item extended. No kernel code changed.
+
+**Reference**
+None.
+
+**Verification**
+As for the group.
+
+**Deliberately not done**
+Removing the forwarders (item 54, option B) and moving the sums (item 6, options B and C).
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 54 and 6, decided by the user on 2026-11-18.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What do the flat `node_*` queries answer that the members cannot?
+- Why does a test that compares a forwarder with what it forwards to check nothing?
+- Which decision does the home of the machine-wide sums wait for?

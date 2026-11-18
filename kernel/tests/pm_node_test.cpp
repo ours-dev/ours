@@ -34,9 +34,10 @@
 ///     a test of its own, run with the exhaust-remote option from an idle
 ///     guest with a memory-only NUMA node.
 ///   - Node queries. num_nodes() agrees with the ids find_node() answers, and
-///     the current node's queries describe it. What an absent node id
-///     answers is PmNode.AbsentNodesAnswerNothing, skipped where every id is
-///     in use.
+///     the current node resolves. The flat node_* queries are the node's own
+///     members for a node that exists, by construction; what an absent node
+///     id answers is PmNode.AbsentNodesAnswerNothing, skipped where every id
+///     is in use.
 ///   - Home allocation. An explicit home, Gaf::ThisNode and an order past the
 ///     maximum through mm::alloc_frames(); an empty node set and one without
 ///     the home through mm::priv::alloc_frames(), since no public function
@@ -619,11 +620,11 @@ namespace {
                 found += 1;
             }
         }
-        EXPECT_TRUE(node && found == mm::num_nodes() &&
-                        mm::node_work_cpus(nid) == node->work_cpus() &&
-                        mm::node_soft_affinity(nid) == &node->soft_affinity() &&
-                        mm::node_hard_affinity(nid) == &node->hard_affinity(),
-                    "PMM topology queries describe the current node");
+        // The flat node_* queries are the node's members for a node that
+        // exists, by construction; what they add, an answer for a node that
+        // does not, is AbsentNodesAnswerNothing's to check.
+        EXPECT_TRUE(node && found == mm::num_nodes(),
+                    "the node table counts every node find_node() answers for");
     }
 
     auto check_local_fallback(NodeId const remote_home) -> bool {
