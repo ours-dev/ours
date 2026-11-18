@@ -35,22 +35,9 @@ jobs:
           # needs the history, and the first push of a branch compares with
           # origin/main.
           fetch-depth: 0
-          submodules: false
-
-      # .gitmodules names lockdep and concurrent by SSH URL; lockdep is a
-      # private repository, which the job's own token cannot read.
-      # SUBMODULE_TOKEN is a fine-grained token that can read only the
-      # ours-dev submodules, stored as a repository secret of this repository
-      # (an organisation secret does not reach a private repository on the
-      # free plan, and an unset secret arrives as an empty string). The other
-      # submodules keep their anonymous https URLs.
-      - name: submodules
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
-        run: |
-          if [ -z "$SUBMODULE_TOKEN" ]; then echo "::error::the repository secret SUBMODULE_TOKEN is empty or not set"; exit 1; fi
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/ours-dev/".insteadOf "git@github.com:ours-dev/"
-          git submodule update --init --recursive --depth 1
+          # Every submodule is a public repository. .gitmodules names the
+          # ours-dev ones by SSH URL, which the action rewrites to https.
+          submodules: recursive
 
       # Saved as soon as it is fetched, not at the end of the job, so a red
       # run does not download the toolchain again next time.
