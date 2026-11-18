@@ -129,3 +129,37 @@ None.
 - Why is the pending ask stale once a synchronous walk has its own count?
 - Why does the drop come before the walk, not after?
 - Who still calls `take()`, and why may they?
+
+## The PMM's one call up to the reclaimer is kept, and written down (2026-11-18)
+
+**Files**
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — the reason the pipeline asks the reclaimer through its singleton while the watchdog is handed down as an event; `FrameWaiters` and `reclaim_superseding()` in the design reference
+
+**Symptom**
+From the review's minor list: `observe_pressure()` calls `MemoryReclaimer::get().request(zone)`, a call from the PMM up to a service above it, while the watchdog reaches the PMM the other way, registering an event (`set_free_memory_signal()`).
+
+**Cause**
+Not a defect to fix, the user decided (option C): `request(zone)` drops a report while a Pause lives, before it marks the node; a mark made under the PMM, as options A and B would do, would no longer be dropped but kept and taken after the Pause, which several tests and review M1's contract rely on not happening.
+
+**Change**
+Documentation only.
+
+**Reference**
+None.
+
+**Verification**
+None: documents.
+
+**Deliberately not done**
+Options A and B, for the reason above.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 29, decided by the user on 2026-11-17 (option C).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which dependency points up and which down, and why are they not the same shape?
+- What would a Pause stop doing if the mark moved under the PMM?
+- What would it take to make the two symmetric later?
