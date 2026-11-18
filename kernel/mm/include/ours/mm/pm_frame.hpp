@@ -7,6 +7,7 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
+#include <ours/status.hpp>
 
 #include <atomic>
 #include <limits>
@@ -489,31 +490,38 @@ class PageFrame {
         return m_pins.load(std::memory_order_relaxed);
     }
 
-    /// One more pin. False, and nothing changed, when the count is at its
-    /// limit (255): a pin has to be refused there, not wrapped to none. The
-    /// caller holds the owner's lock, so the read and the write are not one
-    /// atomic step and do not need to be.
+    /// One more pin, and every rule a pin has, here with the count they
+    /// guard (mm::pin_frame() says what the caller must hold). BadState for
+    /// the head of a free block, which nobody owns, so nobody may pin;
+    /// NoResource when the count is at its limit (255), where a pin has to be
+    /// refused rather than wrapped to none. Nothing changes when it refuses.
+    /// The caller holds the owner's lock, so the read and the write are not
+    /// one atomic step and do not need to be.
     [[nodiscard]]
-    auto pin() -> bool {
+    auto pin() -> Status {
+        if (is_role(Role::Pmm)) {
+            return Status::BadState;
+        }
         auto const now = m_pins.load(std::memory_order_relaxed);
         if (now == std::numeric_limits<u8>::max()) {
-            return false;
+            return Status::NoResource;
         }
         m_pins.store(static_cast<u8>(now + 1), std::memory_order_relaxed);
-        return true;
+        return Status::Ok;
     }
 
-    /// One pin fewer. False, and nothing changed, when the frame holds none:
-    /// the count is unsigned, so an unpin of none would wrap to the limit and
-    /// hold the frame for ever. The mirror of pin(), and under the same lock.
+    /// One pin fewer. BadState, and nothing changed, when the frame holds
+    /// none: the count is unsigned, so an unpin of none would wrap to the
+    /// limit and hold the frame for ever. The mirror of pin(), and under the
+    /// same lock.
     [[nodiscard]]
-    auto unpin() -> bool {
+    auto unpin() -> Status {
         auto const now = m_pins.load(std::memory_order_relaxed);
         if (now == 0) {
-            return false;
+            return Status::BadState;
         }
         m_pins.store(static_cast<u8>(now - 1), std::memory_order_relaxed);
-        return true;
+        return Status::Ok;
     }
 
     auto get() const -> void {

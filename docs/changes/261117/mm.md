@@ -293,3 +293,49 @@ None.
 - What does a block freed straight into a zone skip, and which of those can leave a thread waiting for ever?
 - What does a passkey open that a friend does not, and what does neither stop?
 - Why do tests need a door under the pipeline at all?
+
+## A frame keeps every rule of its pins with the count (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame::pin()` and `unpin()` return `Status` and hold every rule: the head of a free block (`Role::Pmm`) is refused, a full count (255) is refused, an unpin of none is refused
+- `kernel/mm/pmm.cpp` — `mm::pin_frame()` and `unpin_frame()` forward; their documentation keeps the caller's side of the contract (the owner's lock)
+
+**Symptom**
+Latent, from the review's minor list. The rule "a free block's head is pinned by nobody" was checked by `mm::pin_frame()`, the count's limit by `PageFrame::pin()`. `pin()` is public, so a caller going straight to the frame skipped the first rule.
+
+**Cause**
+The frame knows its own role, so "a free frame cannot be pinned" is a fact about the frame, like the limit beside it. Split between the seam and the frame, each half was right and the whole was kept by convention.
+
+**Change**
+
+```cpp
+auto PageFrame::pin() -> Status {
+    if (is_role(Role::Pmm)) { return Status::BadState; }
+    if (m_pins.load(std::memory_order_relaxed) == std::numeric_limits<u8>::max()) { return Status::NoResource; }
+    ...
+    return Status::Ok;
+}
+auto pin_frame(PmFrame *frame) -> Status { return frame->pin(); }   // the contract lives here
+```
+
+The same answers in the same order as before, so callers see no change.
+
+**Reference**
+None: the pin count is this kernel's own (F1 of the redesign).
+
+**Verification**
+Recorded with the next change, on the tree that holds both.
+
+**Deliberately not done**
+Removing `mm::pin_frame()`: it is where the caller's half of the contract, the owner's lock, is written down.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 7, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the free-frame rule belong to the frame rather than to the seam?
+- What does `mm::pin_frame()` still say that the frame cannot?
+- Why can the read and the write of the pin count be two steps?

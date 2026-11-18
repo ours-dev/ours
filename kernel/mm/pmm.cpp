@@ -962,21 +962,14 @@ auto adopt_frames(Pfn start, Pfn const end) -> void {
 
 auto pin_frame(PmFrame *const frame) -> Status {
     DEBUG_ASSERT(frame, "pin requires a frame");
-    if (frame->is_role(page::Role::Pmm)) {
-        return Status::BadState;
-    }
-    if (!frame->pin()) {
-        return Status::NoResource;
-    }
-    return Status::Ok;
+    // The frame keeps the rules with the count (PageFrame::pin()); the seam
+    // is where the caller's side of the contract is written down.
+    return frame->pin();
 }
 
 auto unpin_frame(PmFrame *const frame) -> Status {
     DEBUG_ASSERT(frame, "unpin requires a frame");
-    if (!frame->unpin()) {
-        return Status::BadState;
-    }
-    return Status::Ok;
+    return frame->unpin();
 }
 
 auto split_block(PmFrame *const frame, usize const order) -> void {
