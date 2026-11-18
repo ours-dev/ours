@@ -191,6 +191,14 @@ namespace {
             values.has("sel") ? values.get<std::string_view>("sel") : std::string_view{"all"};
         auto const all_selected = selection == "all";
 
+        // The words besides the selection. words() carries the sel= word
+        // too, and the list and death shapes are rules about what comes
+        // with the selection, not about the selection itself.
+        auto other_words = word_count;
+        if (values.has("sel")) {
+            other_words -= 1;
+        }
+
         // The runner's own options belong to the all-selection alone: a run
         // that asked for a part of the registry asked for it as it stands.
         auto const runner_word =
@@ -202,7 +210,7 @@ namespace {
 
         // The list selections print the registry and take no other word.
         if (selection == "list" || selection == "?") {
-            if (word_count != 0) {
+            if (other_words != 0) {
                 log::error("ktest: ERROR ktest sel=list takes no options");
                 return 1;
             }
@@ -216,7 +224,7 @@ namespace {
         // its death tests.
         if (selection == "death") {
             auto const carries_filter = values.has("filter");
-            if (word_count != (carries_filter ? 1 : 0) || runner_word) {
+            if (other_words != (carries_filter ? 1 : 0) || runner_word) {
                 log::error("ktest: ERROR usage: ktest sel=death [filter=<glob>]");
                 return 1;
             }

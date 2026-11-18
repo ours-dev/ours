@@ -45,3 +45,38 @@ None.
 - Why did `void SetUp()` in a class derived from `Environment` compile after the base renamed it, and what single keyword turns that into a compile error?
 - Why must `Run<KernelServices>` live in static storage rather than in `ktest_command`'s frame?
 - What ties a test's record to its class when the record is a static member, that a token-pasted namespace-scope name did not?
+
+## `ktest sel=list` and `ktest sel=death` stop rejecting their own selection word (2026-11-18)
+
+**Files**
+- `kernel/lib/ktest/src/runner.cpp` — the list and death shape checks count the words besides `sel=`
+- `docs/repairs/261118/ktest.md` — deleted, its only item is this fix
+
+**Symptom**
+On the dbg image, `ktest sel=list` printed `ktest: ERROR ktest sel=list takes no options` and listed nothing, and `ktest sel=death` printed its usage line and ran nothing. `ktest all` and filter runs were unaffected.
+
+**Cause**
+`invocation.words()` holds every word after the command name, the `sel=` word included. The list branch required that count to be 0 and the death branch 0 or 1 (with `filter=`), so the selection word alone broke the rule. The checks were written for the positional grammar, `ktest list`, where the selection was not one of the option words, and were not updated when `sel=` came in (d84981e3).
+
+**Change**
+After the parse, `other_words` is the word count minus one when the line carried `sel=`, and the two shape checks use it. The rejected alternative was to compare against 1 and 1-or-2: that breaks again for a bare `ktest`, which carries no `sel=` word and means `sel=all`.
+
+**Reference**
+None, this project's own command grammar.
+
+**Verification**
+`boot_check.py --out out/ktest-oop`: build ok, dbg PASS 46/5/0, rel PASS 44/8/0 (7/7 required), host-tests 185/0. On dbg, `ktest sel=list` passes with 100 tests listed plus `ktest: DEATH KtestDeath.PanicsOnDemand`, and a bare `ktest` gives `ran=100 passed=84 failed=0 skipped=16`. `ktest sel=death` passes: `KtestDeath.PanicsOnDemand` reached its panic, on a fresh boot of its own.
+
+**Deliberately not done**
+The `MAX_RUN_OPTIONS` bound before the parse counts the `sel=` word too, so a line with `sel=` and 14 test options (15 words, which the console allows) is refused although the plan's array holds 14. No test passes that many options. The bound moves into the command object of a later step of `.agents/tasks/ktest-hsien-oop/PLAN.md`.
+
+**How it was found**
+Running `ktest sel=list` by hand while verifying the previous change.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a bare `ktest` need the subtraction to be conditional?
+- Why does `ktest sel=death filter=X` carry exactly one word besides the selection, and what does a second one mean?
+- What would an object that owns the parsed command line answer instead of a raw word count?
