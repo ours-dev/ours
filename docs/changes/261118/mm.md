@@ -163,3 +163,49 @@ None.
 - Which dependency points up and which down, and why are they not the same shape?
 - What would a Pause stop doing if the mark moved under the PMM?
 - What would it take to make the two symmetric later?
+
+## A request waiting for a blank frame is in one state at a time (2026-11-18)
+
+**Files**
+- `kernel/mm/include/ours/mm/page_request.hpp`, `kernel/mm/page_request.cpp` — `AnonymousPageRequest`'s `bool m_active`, `Gaf m_alloc_flags` and `PmFrame *m_frame` become one `State` (Idle, Raised, Holding), the flags and the frame sharing an anonymous union
+
+**Symptom**
+From the review's minor list: three fields could say three things at once that the request never is, raised and holding a frame, or holding one while not being asked; only assertions in `make_active()` and `allocate()` kept them apart.
+
+**Cause**
+A state machine kept as loose fields lets the invalid combinations be stored, and every reader has to know which combinations mean what. One enum names the state, and a payload that only one state has shares its storage with the other's, so a request cannot hold both.
+
+**Change**
+
+```cpp
+enum class State : u8 { Idle, Raised, Holding };
+State m_state = State::Idle;
+union {
+    Gaf m_alloc_flags = Gaf{};   // in Raised
+    PmFrame *m_frame;            // in Holding
+};
+auto is_active() const -> bool { return m_state == State::Raised; }
+auto has_frame() const -> bool { return m_state == State::Holding; }
+```
+
+`allocate()` copies the flags out before it leaves Raised, since the frame it gets is stored over them. The interface and every transition are as before: the caller still asks `has_frame()`, takes the frame, or raises the request on ShouldWait.
+
+**Reference**
+None: this kernel's own page requests.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (`admission-smoke` among them). `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the zones' floors still hold 14682 frames, so every watermark came out as before. clang-tidy reports nothing in `pm_zone.cpp` or `page_request.cpp`. One narrow pre-commit review covered the four changes of this group; it found the coverage list at the head of `pm_node_test.cpp` still promising the comparison item 54 removed (reworded).
+
+**Deliberately not done**
+Moving the decision "take the frame or raise the request" into the request (option B): the allocation it would make is the VMO's, with the VMO's flags and order.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 34, decided by the user on 2026-11-18 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which combinations of the three old fields were invalid, and what kept them out?
+- Why must `allocate()` copy the flags before it stores the frame?
+- What does a union cost here, and what would a variant have added?
