@@ -126,11 +126,10 @@ TEST(KtestParamMacro, ExpansionShape) {
         "the macro derives the test's class from its own Fixture base");
     static_assert(std::is_base_of_v<Numbers_ParamBase, Numbers_ReadsItsValue_Test>,
                   "the macro derives the test's class from the suite's param base");
-    static_assert(sizeof(ktest_param_storage_Numbers_ReadsItsValue) >=
-                      sizeof(Numbers_ReadsItsValue_Test),
+    static_assert(sizeof(Numbers_ReadsItsValue_Test::storage) >= sizeof(Numbers_ReadsItsValue_Test),
                   "the macro reserves storage that fits the test's object");
     ASSERT_EQ(Numbers_ParamBase::COUNT, usize{3});
-    auto const &block = ktest_param_block_Numbers_ReadsItsValue;
+    auto const &block = Numbers_ReadsItsValue_Test::records;
     EXPECT_STREQ(block.records[0].name, "Numbers.ReadsItsValue/0");
     EXPECT_STREQ(block.records[1].name, "Numbers.ReadsItsValue/1");
     EXPECT_STREQ(block.records[2].name, "Numbers.ReadsItsValue/2");
@@ -153,7 +152,7 @@ TEST(KtestParamMacro, TableIsTheNamedOne) {
 TEST(KtestParamIteration, EachRecordGetsItsOwnValue) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_param_block_Numbers_ReadsItsValue;
+    auto const &block = Numbers_ReadsItsValue_Test::records;
     for (auto i = usize{0}; i < Numbers_ParamBase::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
         EXPECT_EQ(outcome.failures, usize{0});
@@ -169,7 +168,7 @@ TEST(KtestParamIteration, TheWholeBlockIsTheWholeFamily) {
     // The block one KTEST_P declares is exactly its records, contiguous: the
     // section walk of the booted runner depends on it.
     ASSERT_EQ(Numbers_ParamBase::COUNT, usize{3});
-    auto const &block = ktest_param_block_Numbers_ReadsItsValue;
+    auto const &block = Numbers_ReadsItsValue_Test::records;
     EXPECT_STREQ(block.records[0].name, "Numbers.ReadsItsValue/0");
     EXPECT_TRUE(&block.records[2] == &block.records[0] + 2);
 }
@@ -177,7 +176,7 @@ TEST(KtestParamIteration, TheWholeBlockIsTheWholeFamily) {
 TEST(KtestParamLifecycle, FixtureWrapsEveryRecord) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_param_block_ParamsFixture_SeesFixtureAndParameter;
+    auto const &block = ParamsFixture_SeesFixtureAndParameter_Test::records;
     ASSERT_EQ(ParamsFixture_ParamBase::COUNT, usize{2});
     for (auto i = usize{0}; i < ParamsFixture_ParamBase::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
@@ -197,7 +196,7 @@ TEST(KtestParamLifecycle, FixtureWrapsEveryRecord) {
 TEST(KtestParamLifecycle, EachRecordGetsAFreshFixture) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_param_block_ParamsFixture_MutatesAndLeaves;
+    auto const &block = ParamsFixture_MutatesAndLeaves_Test::records;
     for (auto i = usize{0}; i < ParamsFixture_ParamBase::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
         EXPECT_EQ(outcome.failures, usize{0});
@@ -212,7 +211,7 @@ TEST(KtestParamLifecycle, EachRecordGetsAFreshFixture) {
 TEST(KtestParamVerdict, FailuresCountPerRecord) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_param_block_Numbers_FailsWhereAsked;
+    auto const &block = Numbers_FailsWhereAsked_Test::records;
     auto summary = ktest::Summary{};
     for (auto i = usize{0}; i < Numbers_ParamBase::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
@@ -248,7 +247,7 @@ TEST(KtestParamFilter, SuffixesMatchWholeNames) {
 TEST(KtestTypedMacro, ExpansionShape) {
     static_assert(Boxes_TypeList::COUNT == 3, "the list carries all its types");
     ASSERT_EQ(Boxes_TypeList::COUNT, usize{3});
-    auto const &block = ktest_typed_block_Boxes_ReadsItsType;
+    auto const &block = Boxes_ReadsItsType_Test::records;
     EXPECT_STREQ(block.records[0].name, "Boxes.ReadsItsType/0");
     EXPECT_STREQ(block.records[1].name, "Boxes.ReadsItsType/1");
     EXPECT_STREQ(block.records[2].name, "Boxes.ReadsItsType/2");
@@ -261,7 +260,7 @@ TEST(KtestTypedMacro, ExpansionShape) {
 TEST(KtestTypedIteration, EachRecordGetsItsOwnType) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_typed_block_Boxes_ReadsItsType;
+    auto const &block = Boxes_ReadsItsType_Test::records;
     for (auto i = usize{0}; i < Boxes_TypeList::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
         EXPECT_EQ(outcome.failures, usize{0});
@@ -277,7 +276,7 @@ TEST(KtestTypedIteration, EachRecordGetsItsOwnType) {
 TEST(KtestTypedIteration, ChecksReachTheTypes) {
     LOG.clear();
     FAILURES.clear();
-    auto const &block = ktest_typed_block_Boxes_ChecksItsType;
+    auto const &block = Boxes_ChecksItsType_Test::records;
     for (auto i = usize{0}; i < Boxes_TypeList::COUNT; ++i) {
         auto const outcome = run_record(block.records[i]);
         EXPECT_EQ(outcome.failures, usize{0});
@@ -291,12 +290,12 @@ TEST(KtestTypedVerdict, SummaryCountsInstantiations) {
     // The runner's SUMMARY adds up instantiations like any other entry: the
     // typed family all passing, the value family one failing of three.
     auto summary = ktest::Summary{};
-    auto const &typed = ktest_typed_block_Boxes_ChecksItsType;
+    auto const &typed = Boxes_ChecksItsType_Test::records;
     for (auto i = usize{0}; i < Boxes_TypeList::COUNT; ++i) {
         auto const outcome = run_record(typed.records[i]);
         summary.record(outcome.failures != 0, outcome.skipped);
     }
-    auto const &values = ktest_param_block_Numbers_FailsWhereAsked;
+    auto const &values = Numbers_FailsWhereAsked_Test::records;
     for (auto i = usize{0}; i < Numbers_ParamBase::COUNT; ++i) {
         auto const outcome = run_record(values.records[i]);
         summary.record(outcome.failures != 0, outcome.skipped);
