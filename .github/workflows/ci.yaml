@@ -24,9 +24,12 @@ permissions:
 
 jobs:
   verify:
-    # macOS 15 on Apple silicon: the host every tool in build/prebuilt.json is
-    # pinned for, the Homebrew bottles included (arm64_sequoia).
-    runs-on: macos-15
+    # macOS 26 on Apple silicon. The tools in build/prebuilt.json run from
+    # macOS 15 on (the Homebrew bottles are arm64_sequoia), but the host
+    # tools the build links pair LLVM 23's libc++ headers with the system's
+    # libc++, which exports what those headers call (std::__hash_memory)
+    # only from macOS 26 (docs/repairs/261117/ci.md).
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -38,6 +41,15 @@ jobs:
           # Every submodule is a public repository. .gitmodules names the
           # ours-dev ones by SSH URL, which the action rewrites to https.
           submodules: recursive
+
+      # The scripts' Python packages (PyYAML, copier), in a virtual
+      # environment because the runner's Homebrew Python refuses a plain pip
+      # install; first on PATH, so every later `python3` is this one.
+      - name: python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       # Saved as soon as it is fetched, not at the end of the job, so a red
       # run does not download the toolchain again next time.
