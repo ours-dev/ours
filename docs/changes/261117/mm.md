@@ -235,3 +235,61 @@ None.
 - What ends the wait of a request put off at Low, and what is missing when no watchdog runs?
 - Why is a relaxed read of the delay level enough here?
 - Why does a request allowing Movable not wait at Low, while one allowing up to Normal does?
+
+## The node and zone layers under the pipeline take a passkey (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/layer_keys.hpp` (new) — `NodeLayerKey` (made by `priv::Pipeline` and `test::LayerKeys`) and `ZoneLayerKey` (made by `PmNode`, `priv::Pipeline` and `test::LayerKeys`)
+- `kernel/mm/include/ours/mm/test/layer_keys.hpp` (new) — `test::LayerKeys`, the kernel tests' door
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp`, `kernel/mm/pm_node_init.cpp` — `PmNode::alloc_frames()` and `free_frames()` take a `NodeLayerKey`; the node makes a `ZoneLayerKey` for its walk and for bring-up's watermark setup
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::alloc_frames()`, `free_frames()`, `adopt()`, `setup_watermarks()` and `setup_lowmem_reserve()` take a `ZoneLayerKey`; `friend class PmNode` is gone, which showed `m_flags` is read by nothing (kept, marked)
+- `kernel/mm/pmm.cpp` — `priv::Pipeline`, the pipeline's door, and its keys at the four calls down
+- `kernel/tests/pm_zone_test.cpp`, `kernel/tests/pm_node_test.cpp`, `kernel/tests/page_reclaim_test.cpp` — through the test door; `LowZonesKeepAReserve` also checks the reserve through the node's walk
+- `.agents/skills/kernel-design/references/mm.md`, `.agents/tasks/pmm-redesign/DESIGN.md` — the layers' access as built (the reference said "private and reached through friend", which they never were)
+
+**Symptom**
+Latent. The node's and the zone's `alloc_frames()` and `free_frames()` were public, so any caller could go under the pipeline: a block freed straight into a zone skipped `prepare_free()`'s checks (reserved, pinned, not a head), `clear_block()`, the relief wake a waiter at Low depends on, and the pressure observation; a block taken straight from a zone skipped the thread's allocation switch, every floor, zeroing and the counters. Only `pmm.cpp` and the tests did it, by convention.
+
+**Cause**
+"Only the pipeline calls the layers under it" is an invariant over callers, and a public member states the opposite. A friend would state it, but opens every private member of the class to the friend; a passkey, a type only the intended caller can construct, taken as a parameter, opens one function to one caller (review T5). Tests legitimately need to go under: draining a zone below every floor is what the pipeline will not do, so they get a door of their own, named for what it is.
+
+**Change**
+
+```cpp
+class NodeLayerKey {                         // priv/layer_keys.hpp
+    friend class priv::Pipeline;             // defined only in pmm.cpp
+    friend class test::LayerKeys;            // ours/mm/test/layer_keys.hpp
+    NodeLayerKey() = default;
+};
+auto PmNode::alloc_frames(AllocRequest const &, AdmissionPass, NodeLayerKey) -> ...;
+auto PmZone::free_frames(PmFrame &, ZoneLayerKey) -> bool;
+
+// pmm.cpp
+auto block = start->alloc_frames(request, AdmissionPass::Low, priv::Pipeline::node_key());
+// a test
+auto block = zone.alloc_frames(order, mm::test::LayerKeys::zone());
+```
+
+What the keys do not prevent, said in their comments: another file could define its own `priv::Pipeline`, and any file can include the test door. They guard against reaching the layers by mistake, which is the risk, not on purpose. `LowZonesKeepAReserve` now also walks the node with a request that allows nothing above the low zone, which shows the walk asks each zone with the request's own highest type; its refusal half stays a question to the zone, since a request that allows Normal would be served by the zones above.
+
+**Reference**
+None for the keys: a C++ idiom (the passkey). Linux keeps its zone allocator's internals (`rmqueue()`, `__free_one_page()`) `static` to `mm/page_alloc.c`, file scope doing what the keys do across this kernel's files.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped, `LowZonesKeepAReserve` with its new walk check among the passes; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`, `pm_zone.cpp` and `pm_node.cpp`. Control: a test that builds `mm::ZoneLayerKey{}` itself fails to compile ("calling a private constructor of class `ZoneLayerKey`").
+
+A narrow pre-commit review (two reviewers, each finding checked by a second agent; the first attempt lost both to dropped connections and was run again) found two blank lines left where the friend block was removed (one deleted), `PmNode::free_frames()`'s comment putting the waiter's wake before the release when it comes after and depends on its result (corrected), and the new classes not declared `final` (they are now). Refuted: that a public `PmNode::setup_watermarks()` makes the zone's keyed setup pointless (it was the caller before and is still the only one), that another file defining `priv::Pipeline` breaks the seal (said in the comments, and an ODR violation besides), and that the design document's older "target" sentence must go (it keeps its history with a dated note, as the rest of it does).
+
+**Deliberately not done**
+Sealing `PmZone::admits()`, a query with no effect. Removing `m_flags`, a stub for state the zone will need.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 25, 40, 42 and 53, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a block freed straight into a zone skip, and which of those can leave a thread waiting for ever?
+- What does a passkey open that a friend does not, and what does neither stop?
+- Why do tests need a door under the pipeline at all?

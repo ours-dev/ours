@@ -261,18 +261,22 @@ class PmNode {
     /// public, and a caller that builds its own request and comes here skips
     /// the gate, the allocation-state check, the order bound, the second
     /// pass and prepare_alloc(); the watermark of the pass it names still
-    /// holds. Only tests do.
+    /// holds. So it takes a key only the pipeline and tests can make
+    /// (NodeLayerKey).
     [[nodiscard]]
-    auto alloc_frames(AllocRequest const &request, AdmissionPass pass)
+    auto alloc_frames(AllocRequest const &request, AdmissionPass pass, NodeLayerKey)
         -> ustl::Result<PmFrame *, BlockFailure>;
 
     /// The node's layer of mm::free_frames(): returns a block of this node's
     /// to the zone it came from. The frame names both, and its head the
     /// block's order. Returns what the
     /// zone's free_frames() does: whether this release brought the zone back
-    /// to admitting a frame at its Low watermark.
+    /// to admitting a frame at its Low watermark. Takes a NodeLayerKey, which
+    /// only the pipeline and tests make: the pipeline checks the frame
+    /// (prepare_free()) before this call, and wakes one waiter after it when
+    /// this returns true.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame) -> bool;
+    auto free_frames(PmFrame &frame, NodeLayerKey) -> bool;
 
     /// Whether this node's zone of |type| could serve an allocation of
     /// |order| from its free lists right now; false when the node has no such

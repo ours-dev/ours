@@ -33,6 +33,7 @@
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/mm/test/layer_keys.hpp>
 
 #include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
@@ -66,10 +67,10 @@ namespace {
         block->split(0);
         constexpr auto HALF = BLOCK_FRAMES / 2;
         for (auto i = HALF; i > 0; --i) {
-            auto _ = zone.free_frames(block[i - 1]);
+            auto _ = zone.free_frames(block[i - 1], mm::test::LayerKeys::zone());
         }
         for (auto i = HALF; i < BLOCK_FRAMES; ++i) {
-            auto _ = zone.free_frames(block[i]);
+            auto _ = zone.free_frames(block[i], mm::test::LayerKeys::zone());
         }
 
         auto const after = zone.free_block_profile();
@@ -111,7 +112,8 @@ namespace {
         PmFrame *later = nullptr;
         PmFrame::List spare;
         for (usize taken = 0; taken <= BLOCKS_PER_SECTION && !later; ++taken) {
-            auto const taken_block = zone.alloc_frames(MAX_FRAME_ORDER);
+            auto const taken_block =
+                zone.alloc_frames(MAX_FRAME_ORDER, mm::test::LayerKeys::zone());
             if (!taken_block) {
                 break;
             }
@@ -138,8 +140,9 @@ namespace {
         }
 
         // Straight into the zone, as they were taken: no waiter to wake.
-        spare.clear_and_dispose(
-            [&zone](PmFrame *frame) noexcept { auto _ = zone.free_frames(*frame); });
+        spare.clear_and_dispose([&zone](PmFrame *frame) noexcept {
+            auto _ = zone.free_frames(*frame, mm::test::LayerKeys::zone());
+        });
         return later != nullptr;
     }
 

@@ -59,7 +59,7 @@ PmNode::PmNode(NodeId nid)
     , m_page_queues()
     , m_short_zones(0) {}
 
-auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
+auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass, NodeLayerKey)
     -> ustl::Result<PmFrame *, BlockFailure> {
     m_canary.verify<Self>();
     DEBUG_ASSERT(request.home_node() == m_id, "node {} was handed a request whose home is node {}",
@@ -77,7 +77,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
             continue;
         }
 
-        auto const block = zone.alloc_frames(request.order());
+        auto const block = zone.alloc_frames(request.order(), ZoneLayerKey{});
         if (!block) {
             if (request.order() == 0 && !depleted_zone && zone.shortfall_to_high() != 0) {
                 depleted_zone = ustl::some_ref(zone);
@@ -91,7 +91,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     return ustl::err(BlockFailure{.depleted_zone = depleted_zone});
 }
 
-auto PmNode::free_frames(PmFrame &frame) -> bool {
+auto PmNode::free_frames(PmFrame &frame, NodeLayerKey) -> bool {
     m_canary.verify<Self>();
     DEBUG_ASSERT(frame.nid() == m_id, "frame {:#x} of node {} was returned to node {}",
                  frame_to_phys(&frame), frame.nid(), m_id);
@@ -99,7 +99,7 @@ auto PmNode::free_frames(PmFrame &frame) -> bool {
     auto *const zone = m_zone_list.local_zone(frame.zone());
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
-    return zone->free_frames(frame);
+    return zone->free_frames(frame, ZoneLayerKey{});
 }
 
 namespace {

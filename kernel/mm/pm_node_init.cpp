@@ -240,12 +240,12 @@ auto PmNode::setup_watermarks() -> void {
 
     auto const reserve_frames = machine_reserve_frames(managed_total);
     PmZone::for_each([reserve_frames, managed_total](PmZone &zone) {
-        zone.setup_watermarks(reserve_frames, managed_total);
+        zone.setup_watermarks(reserve_frames, managed_total, ZoneLayerKey{});
     });
     // After every zone's watermarks, though it reads only managed counts:
     // those are final once the reservations are counted, which is what this
     // function already waits for.
-    PmZone::for_each([](PmZone &zone) { zone.setup_lowmem_reserve(); });
+    PmZone::for_each([](PmZone &zone) { zone.setup_lowmem_reserve(ZoneLayerKey{}); });
 }
 
 /// Creates and registers a PmNode for every node in |nodes|.

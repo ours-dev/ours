@@ -61,6 +61,7 @@
 #include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/priv/pmm.hpp>
 #include <ours/mm/priv/zone_candidates.hpp>
+#include <ours/mm/test/layer_keys.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
@@ -670,12 +671,12 @@ namespace {
             }
             constexpr auto ITERATIONS = usize{8192};
             for (usize i = 0; i < ITERATIONS; ++i) {
-                auto const block = state.zone.alloc_frames(0);
+                auto const block = state.zone.alloc_frames(0, mm::test::LayerKeys::zone());
                 auto const count = state.zone.num_free_frames();
                 if (block) {
                     // Back into the zone it came from, below the pipeline:
                     // no waiter to wake.
-                    auto _ = state.zone.free_frames(block.value());
+                    auto _ = state.zone.free_frames(block.value(), mm::test::LayerKeys::zone());
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
@@ -732,7 +733,7 @@ namespace {
         }
         mm::find_node(nid)->zone_list().for_each_local_zone([&held](PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
-                while (auto block = zone.alloc_frames(order - 1)) {
+                while (auto block = zone.alloc_frames(order - 1, mm::test::LayerKeys::zone())) {
                     held.push_back(block.value());
                 }
             }
@@ -1088,7 +1089,7 @@ namespace {
             for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
                 auto const size = usize{1} << (order - 1);
                 while (m_zone.num_free_frames() >= target + size) {
-                    auto block = m_zone.alloc_frames(order - 1);
+                    auto block = m_zone.alloc_frames(order - 1, mm::test::LayerKeys::zone());
                     if (!block) {
                         break;
                     }
@@ -1104,6 +1105,12 @@ namespace {
             if (result) {
                 m_held.push_back(**result);
             }
+        }
+
+        /// Holds a block the test took from a layer under the pipeline until
+        /// the trial ends.
+        auto keep(PmFrame &block) -> void {
+            m_held.push_back(block);
         }
 
         /// Hands one held frame back to the test, which gives it back itself;
@@ -1467,7 +1474,7 @@ namespace {
         // build.
         mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
         auto const before = zone.free_block_profile();
-        auto block = zone.alloc_frames(3);
+        auto block = zone.alloc_frames(3, mm::test::LayerKeys::zone());
         if (!block) {
             FAIL("an order-3 block from zone {}", mm::to_string(zone.zone_type()));
         }
@@ -1647,9 +1654,33 @@ namespace {
         auto const refused = !low->admits(0, mm::AdmissionPass::Low, true, ZoneType::Normal);
         auto const admitted = low->admits(0, mm::AdmissionPass::Low, true, low->zone_type());
 
+        // The same through the node's walk, as the pipeline drives it: a
+        // request that allows nothing above the low zone is served from it at
+        // this line, so the walk asks each zone with the request's own highest
+        // type. The refusal stays a question to the zone: a request that
+        // allows Normal would be served by the zones above it on the walk.
+        auto const nid = low->which_node();
+        auto *const node = mm::find_node(nid);
+        auto const request =
+            mm::resolve_request(
+                mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, NodeMask::of(nid),
+                mm::AllocRequest::Origin{.node = nid, .cpu = mm::CpuLocal::current_cpu()})
+                .with_zone_range(low->zone_type(), low->zone_type());
+        auto walked_from_low = false;
+        if (node) {
+            auto const walked =
+                node->alloc_frames(request, mm::AdmissionPass::Low, mm::test::LayerKeys::node());
+            if (walked) {
+                walked_from_low = (*walked)->zone() == low->zone_type() && (*walked)->nid() == nid;
+                trial.keep(**walked);
+            }
+        }
+
         EXPECT_TRUE(drained && refused,
                     "at Low plus its reserve a low zone refuses a request that allows Normal");
         EXPECT_TRUE(admitted, "and still admits a request that allows nothing above it");
+        EXPECT_TRUE(walked_from_low,
+                    "the node's walk serves such a request from the low zone, at the same line");
     }
 
     KTEST(PmNode, AllocationsTakeTheHighestZoneFirst) {

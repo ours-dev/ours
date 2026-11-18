@@ -29,6 +29,25 @@
 
 namespace ours::mm {
 namespace priv {
+    /// The pipeline's own door to the layers under it: the one place outside
+    /// PmNode and the tests that can make their keys
+    /// (ours/mm/priv/layer_keys.hpp). Defined here and nowhere else, since
+    /// this file is the pipeline.
+    class Pipeline final {
+      public:
+        [[nodiscard]]
+        static auto node_key() -> NodeLayerKey {
+            return NodeLayerKey{};
+        }
+
+        [[nodiscard]]
+        static auto zone_key() -> ZoneLayerKey {
+            return ZoneLayerKey{};
+        }
+    };
+} // namespace priv
+
+namespace priv {
     // These carry the names pmm.hpp declares and init_pmm.cpp assigns. They
     // were left behind under their old g_-prefixed spelling when the header
     // was renamed, so the definitions the whole tree refers to did not exist.
@@ -516,7 +535,8 @@ namespace {
             // the request down to Min (or below, for a caller that cannot block):
             // the band between Low and Min is spent only after reclaim has been
             // asked for.
-            auto block = start->alloc_frames(request, AdmissionPass::Low);
+            auto block =
+                start->alloc_frames(request, AdmissionPass::Low, priv::Pipeline::node_key());
             if (!block) {
                 if (!m_depleted) {
                     m_depleted = block.error().depleted_zone;
@@ -530,7 +550,8 @@ namespace {
                 if (request.waits_at_low() && GATE.ends_waits()) {
                     return ustl::err(Status::ShouldWait);
                 }
-                block = start->alloc_frames(request, AdmissionPass::Min);
+                block =
+                    start->alloc_frames(request, AdmissionPass::Min, priv::Pipeline::node_key());
             }
             if (!block) {
                 return ustl::err(Status::OutOfMem);
@@ -572,7 +593,7 @@ namespace {
         // racing each other and allocations, exactly the one that crossed
         // wakes. A waiter that retries and is beaten to the frame waits
         // again, for the next crossing.
-        if (node->free_frames(frame)) {
+        if (node->free_frames(frame, priv::Pipeline::node_key())) {
             PM_ZONE_RELIEF.add(1);
             GATE.pass_on();
         }
@@ -929,7 +950,8 @@ auto adopt_frames(Pfn start, Pfn const end) -> void {
         auto const stop = std::min(end, zone->end_pfn());
         // Each block that brings a zone back above Low wakes a waiter, as a
         // release in free_block() does.
-        for (auto crossings = zone->adopt(start, stop); crossings > 0; --crossings) {
+        for (auto crossings = zone->adopt(start, stop, priv::Pipeline::zone_key()); crossings > 0;
+             --crossings) {
             PM_ZONE_RELIEF.add(1);
             GATE.pass_on();
         }

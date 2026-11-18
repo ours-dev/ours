@@ -132,7 +132,8 @@ auto PmZone::create_all(ustl::views::Span<Pfn> const max_zone_pfn, NodeMask cons
     });
 }
 
-auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_total) -> void {
+auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_total, ZoneLayerKey)
+    -> void {
     DEBUG_ASSERT(managed_total != 0, "no zone manages a single frame");
 
     auto const managed = managed_frames();
@@ -166,7 +167,7 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
               min + delta + delta);
 }
 
-auto PmZone::setup_lowmem_reserve() -> void {
+auto PmZone::setup_lowmem_reserve(ZoneLayerKey) -> void {
     // The node's managed frames by type: the input mm::lowmem_reserve() wants.
     std::array<usize, NR_ZONES_PER_NODE> managed{};
     auto const row = PmZone::row(m_nid);
@@ -189,7 +190,7 @@ auto PmZone::setup_lowmem_reserve() -> void {
               m_lowmem_reserve[std::to_underlying(ZoneType::Normal)]);
 }
 
-auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {
+auto PmZone::alloc_frames(usize order, ZoneLayerKey) -> ustl::Option<PmFrame &> {
     // Admission is the pipeline's, before it comes here (admits()); the zone
     // only hands out what its buddy has. A per-CPU cache would answer first,
     // in front of the buddy, once it is built (MAX_PCPU_CACHE_ORDER).
@@ -246,7 +247,7 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frames(PmFrame &frame) -> bool {
+auto PmZone::free_frames(PmFrame &frame, ZoneLayerKey) -> bool {
     auto const order = frame.order();
     auto const count = usize{1} << order;
 
@@ -272,7 +273,7 @@ auto PmZone::free_frames(PmFrame &frame) -> bool {
     return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
 }
 
-auto PmZone::adopt(Pfn start, Pfn const end) -> usize {
+auto PmZone::adopt(Pfn start, Pfn const end, ZoneLayerKey) -> usize {
     DEBUG_ASSERT(start_pfn() <= start && start <= end && end <= end_pfn(),
                  "[{:#x}, {:#x}) is not within zone {}'s span [{:#x}, {:#x})", start, end, m_name,
                  start_pfn(), end_pfn());

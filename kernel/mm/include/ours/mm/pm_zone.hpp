@@ -8,6 +8,7 @@
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/priv/admission.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
+#include <ours/mm/priv/layer_keys.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -123,9 +124,10 @@ class PmZone {
     /// The zone's layer of mm::alloc_frames(): takes a block of 2^|order|
     /// frames out of this zone's stock under the zone lock, or none if the
     /// zone cannot serve it. It chooses nothing and prepares nothing: which
-    /// zone to ask is the node's decision, and zeroing is the caller's.
+    /// zone to ask is the node's decision, and zeroing is the caller's. The
+    /// node's walk, and tests, hold the key (ZoneLayerKey).
     [[nodiscard]]
-    auto alloc_frames(usize order) -> ustl::Option<PmFrame &>;
+    auto alloc_frames(usize order, ZoneLayerKey) -> ustl::Option<PmFrame &>;
 
     /// The zone's layer of mm::free_frames(): puts a block this zone owns
     /// back into its stock under the zone lock. How much is the block's to
@@ -138,7 +140,7 @@ class PmZone {
     /// below the allocation pipeline, a test giving back what it took from
     /// the zone directly, may ignore it.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame) -> bool;
+    auto free_frames(PmFrame &frame, ZoneLayerKey) -> bool;
 
     /// Takes the frames [|start|, |end|) of this zone that were never a
     /// block -- memory the boot handoff gives the allocator, memory the
@@ -148,7 +150,22 @@ class PmZone {
     /// Low, each as free_frames() would: allocations between two blocks can
     /// take the zone back below, so one range can cross more than once.
     [[nodiscard]]
-    auto adopt(Pfn start, Pfn end) -> usize;
+    auto adopt(Pfn start, Pfn end, ZoneLayerKey) -> usize;
+
+    /// Scales this zone's three watermarks out of the machine-wide reserve.
+    ///
+    /// |reserve_frames| is how many frames the machine holds back altogether
+    /// and |managed_total| how many every zone manages between them, so this
+    /// zone takes the share of the reserve that matches its share of the
+    /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
+    /// allocating.
+    auto setup_watermarks(usize reserve_frames, usize managed_total, ZoneLayerKey) -> void;
+
+    /// Works out this zone's reserve against every highest zone type a
+    /// request may allow, from the managed frames of the zones above it on
+    /// its node. Called once, by PmNode::setup_watermarks(), after every
+    /// zone's managed count is final and while no CPU is allocating.
+    auto setup_lowmem_reserve(ZoneLayerKey) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
@@ -380,23 +397,6 @@ class PmZone {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
-    friend class PmNode;
-
-    /// Scales this zone's three watermarks out of the machine-wide reserve.
-    ///
-    /// |reserve_frames| is how many frames the machine holds back altogether
-    /// and |managed_total| how many every zone manages between them, so this
-    /// zone takes the share of the reserve that matches its share of the
-    /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
-    /// allocating.
-    auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
-
-    /// Works out this zone's reserve against every highest zone type a
-    /// request may allow, from the managed frames of the zones above it on
-    /// its node. Called once, by PmNode::setup_watermarks(), after every
-    /// zone's managed count is final and while no CPU is allocating.
-    auto setup_lowmem_reserve() -> void;
-
     /// Every zone, at its node and type; null where a node has no memory of a
     /// type. Written by create_all() alone. A fixed grid of every node the
     /// kernel can have by every type, so that a zone is found by its two
@@ -406,6 +406,11 @@ class PmZone {
     gktl::Canary m_canary;
     char const *m_name;
     NodeId m_nid;
+
+    /// The zone's state facts: set up (Initialized, set by the constructor),
+    /// and a span with no hole (Contiguous, which nothing sets yet), for
+    /// compaction and contiguous allocation to ask. Nothing reads them yet.
+    [[maybe_unused]]
     Flags m_flags;
 
     sync::SpinLock m_lock;
