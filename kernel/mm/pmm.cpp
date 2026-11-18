@@ -83,6 +83,44 @@ auto zone_floor_frame_count() -> usize {
 }
 
 namespace {
+    /// The requests waiting for a frame (wait_for_frame_allocation()) and the
+    /// one event that wakes them. A wake is a chance that a retry may succeed
+    /// now: the gate armed again, open or refusing (FreeMemoryGate::set()), or
+    /// a zone back over the line where its Low pass admits a frame
+    /// (free_block(), adopt_frames()). The event is auto-unsignal, so a wake
+    /// wakes one waiter, and that waiter passes it on (wait_then_retry()): one
+    /// wake reaches every waiter in turn without waking them all at once.
+    class FrameWaiters final {
+      public:
+        auto wake_one() -> void {
+            m_wake.signal();
+        }
+
+        /// Sleeps until woken, then makes the allocation |retry| makes. The
+        /// wake goes on to the next waiter unless this one was put off again,
+        /// by the gate or at a zone's Low: then the next opening, or the next
+        /// release that brings a zone back above Low, wakes them. A refusal
+        /// goes on too, so that every waiter hears it.
+        template <typename Retry>
+        auto wait_then_retry(time::Deadline const &deadline,
+                             task::Interruptible const interruptible, Retry &&retry)
+            -> ktl::Result<PmFrame *> {
+            if (auto const status = m_wake.wait(deadline, interruptible); Status::Ok != status) {
+                return ustl::err(status);
+            }
+            auto result = retry();
+            if (result || Status::ShouldWait != result.unwrap_err()) {
+                wake_one();
+            }
+            return result;
+        }
+
+      private:
+        sync::Event m_wake{sync::Event::Options::AutoUnsignal};
+    };
+
+    FrameWaiters WAITERS;
+
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
     /// (set_free_memory_signal()). The mm:: functions own admission, and
@@ -91,9 +129,10 @@ namespace {
     /// it.
     ///
     /// Every allocation and free asks it something, so what they read takes
-    /// no lock: atomics, each loaded on its own. The event that wakes waiters
-    /// is touched only by waiters and by the watcher, and the watcher's lock
-    /// by the watcher and by the rare allocation that shuts the gate.
+    /// no lock: atomics, each loaded on its own. The watcher's lock is taken
+    /// by the watcher and by the rare allocation that shuts the gate. The
+    /// waiters are not the gate's (FrameWaiters): it only wakes one when it is
+    /// armed again.
     class FreeMemoryGate {
       public:
         /// Whether a CanWait allocation may go ahead: Ok, ShouldWait while the
@@ -104,11 +143,6 @@ namespace {
         /// when free memory has left its bounds. One load when nothing is armed.
         auto check_signal() -> void;
 
-        /// Sleeps until the gate opens, or turns to refusing: Ok, or the
-        /// status of a sleep that ended otherwise.
-        auto wait_for_opening(time::Deadline const &deadline, task::Interruptible interruptible)
-            -> Status;
-
         /// Whether a request put off now has something bound to end its wait:
         /// the watchdog has armed the gate, so it will shut it, open it, or
         /// refuse its waiters as free memory moves. Before the watchdog starts,
@@ -118,11 +152,6 @@ namespace {
         [[nodiscard]]
         auto ends_waits() const -> bool {
             return m_delay_level.load(std::memory_order_relaxed) != 0;
-        }
-
-        /// An opening, or a refusal, passed on to the next waiter.
-        auto pass_on() -> void {
-            m_may_allocate.signal();
         }
 
         /// What set_free_memory_signal() does; see there.
@@ -165,9 +194,6 @@ namespace {
         std::atomic<usize> m_signal_lower{0};
         std::atomic<usize> m_signal_upper{0};
         std::atomic<sync::Event *> m_signal_event{nullptr};
-
-        /// Wakes the waiters, one per signal.
-        sync::Event m_may_allocate{sync::Event::Options::AutoUnsignal};
 
         /// Orders set() and shut(): every write of m_state is made under it.
         /// So a shut is decided against the delay level set() last stored,
@@ -255,11 +281,6 @@ namespace {
         }
     }
 
-    auto FreeMemoryGate::wait_for_opening(time::Deadline const &deadline,
-                                          task::Interruptible const interruptible) -> Status {
-        return m_may_allocate.wait(deadline, interruptible);
-    }
-
     auto FreeMemoryGate::set(usize const lower, usize const upper, usize const delay_level,
                              sync::Event *const event, DelayedAllocations const delayed) -> bool {
         auto state = State::Open;
@@ -287,7 +308,7 @@ namespace {
         // Outside the lock: a signal wakes a thread, and the scheduler's lock
         // is not one to take inside a spinlock of the PMM's. The first waiter
         // retries, or is refused, and passes it on.
-        pass_on();
+        WAITERS.wake_one();
         return true;
     }
 
@@ -607,7 +628,7 @@ namespace {
         // again, for the next crossing.
         if (node->free_frames(frame, priv::Pipeline::node_key())) {
             PM_ZONE_RELIEF.add(1);
-            GATE.pass_on();
+            WAITERS.wake_one();
         }
     }
 
@@ -734,19 +755,8 @@ auto free_frame_count() -> usize {
 auto wait_for_frame_allocation(Gaf const alloc_flags, time::Deadline const &deadline,
                                task::Interruptible const interruptible) -> ktl::Result<PmFrame *> {
     DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "a wait for a frame by a caller that cannot wait");
-    if (auto const status = GATE.wait_for_opening(deadline, interruptible); Status::Ok != status) {
-        return ustl::err(status);
-    }
-
-    auto result = alloc_frames(alloc_flags);
-    // The opening goes on to the next waiter, unless this one was put off
-    // again, by the gate or at a zone's Low: then the next opening, or the
-    // next release that brings a zone back above Low, wakes them. A refusal goes
-    // on too, so that every waiter hears it.
-    if (result || Status::ShouldWait != result.unwrap_err()) {
-        GATE.pass_on();
-    }
-    return result;
+    return WAITERS.wait_then_retry(deadline, interruptible,
+                                   [alloc_flags] { return alloc_frames(alloc_flags); });
 }
 
 auto set_free_memory_signal(usize const lower, usize const upper, usize const delay_level,
@@ -965,7 +975,7 @@ auto adopt_frames(Pfn start, Pfn const end) -> void {
         for (auto crossings = zone->adopt(start, stop, priv::Pipeline::zone_key()); crossings > 0;
              --crossings) {
             PM_ZONE_RELIEF.add(1);
-            GATE.pass_on();
+            WAITERS.wake_one();
         }
         start = stop;
     }
