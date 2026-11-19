@@ -7706,6 +7706,65 @@ auto check_loop() -> void {
     }
 }
 
+/// How many rounds of its workload a sampler check gives a session to catch
+/// a tick before it calls the session's silence a fault.
+///
+/// The session's timers are the guest's, but under QEMU's TCG every CPU's
+/// APIC timer, like the PIT, is fired by one host thread: QEMU's main loop.
+/// On a loaded host that thread can go unscheduled for longer than one round
+/// of a check's workload while the vCPU running this shell keeps going. Then
+/// no CPU takes a timer interrupt during the round, the stop clears the
+/// session before the late ones arrive, and the dump is empty with nothing
+/// wrong in the kernel. CI saw it on rel, in a boot whose APIC calibration
+/// had lost 29 of 48 PIT ticks the same way
+/// (docs/changes/261118/shell-tests.md). So a check that caught nothing runs
+/// its round again, each a fresh window, up to this many in all: a session
+/// that never samples still fails. A count and not a guest-time budget,
+/// because a loaded host stretches one round on dbg past two seconds, and a
+/// budget that size would then allow no second round at all.
+constexpr auto SAMPLER_MAX_ROUNDS = u32{8};
+
+/// Guest nanoseconds since boot, as the unsigned count the checks subtract.
+auto monotonic_ns() -> u64 {
+    return static_cast<u64>(ours::clock_get_monotonic());
+}
+
+/// Runs |round| between a start and a stop of |handle|'s session, again and
+/// again, until |caught| finds what the check wants in the stopped session or
+/// SAMPLER_MAX_ROUNDS have run. The caller ran the first round, with its own
+/// checks of the start and the stop. Returns how many rounds there were in
+/// all, or 0 when a start or a stop failed.
+template <typename Round, typename Caught>
+auto rerun_while_silent(ours::Uandle const handle, Round const &round, Caught const &caught)
+    -> u32 {
+    auto rounds = u32{1};
+    while (rounds < SAMPLER_MAX_ROUNDS && !caught()) {
+        if (auto const status = ours::sampler_start(handle); status != ours::Status::Ok) {
+            report("shell: sampler_start(another round) = ", status);
+            return 0;
+        }
+        round();
+        if (auto const status = ours::sampler_stop(handle); status != ours::Status::Ok) {
+            report("shell: sampler_stop(another round) = ", status);
+            return 0;
+        }
+        ++rounds;
+    }
+    return rounds;
+}
+
+/// Prints "<before><count><after> in <rounds> round(s), <ms> ms": what a
+/// check found, how many rounds it took and how much guest time since
+/// |began|, so a log shows when a session had to be run again.
+auto report_rounds(std::string_view const before, std::string_view const count,
+                   std::string_view const after, u32 const rounds, u64 const began) -> void {
+    char round_digits[10];
+    char ms_digits[10];
+    auto const ms = static_cast<u32>((monotonic_ns() - began) / 1'000'000);
+    auto _ = ort::debug_line({before, count, after, " in ", ort::decimal(rounds, round_digits),
+                              " round(s), ", ort::decimal(ms, ms_digits), " ms"});
+}
+
 /// sampler_create, _start, _stop and _read, and the session's lifetime.
 ///
 /// What needs no SAMPLING resource runs in every image: options are checked
@@ -7742,23 +7801,41 @@ auto check_unmatched_ticks(ours::Uandle const sampling) -> bool {
                 ours::sampler_create(sampling, 0, &kernel_only, &handle), Status::Ok)) {
         return false;
     }
-    auto ok =
-        expect("shell: sampler_start(kernel only) = ", ours::sampler_start(handle), Status::Ok);
-    static u64 volatile sink = 0;
-    for (u64 i = 0; i < 20'000'000; ++i) {
-        sink = sink + i;
-    }
-    ok &= expect("shell: sampler_stop(kernel only) = ", ours::sampler_stop(handle), Status::Ok);
+    static u64 volatile SINK = 0;
+    auto const spin = [] {
+        for (u64 i = 0; i < 20'000'000; ++i) {
+            SINK = SINK + i;
+        }
+    };
+    static u8 DUMP[sizeof(ours::SamplerDumpHeader) + 16 * 64 * sizeof(ours::SamplerRecord)];
     ours::SamplerDumpHeader header{};
     auto actual = usize{0};
-    static u8 dump[sizeof(ours::SamplerDumpHeader) + 16 * 64 * sizeof(ours::SamplerRecord)];
-    ok &= expect("shell: sampler_read(kernel only) = ",
-                 ours::sampler_read(handle, dump, sizeof(dump), &actual), Status::Ok);
-    std::memcpy(&header, dump, sizeof(header));
+    auto const read = [handle, &header, &actual] {
+        auto const status = ours::sampler_read(handle, DUMP, sizeof(DUMP), &actual);
+        std::memcpy(&header, DUMP, sizeof(header));
+        return status;
+    };
+
+    auto const began = monotonic_ns();
+    auto ok =
+        expect("shell: sampler_start(kernel only) = ", ours::sampler_start(handle), Status::Ok);
+    spin();
+    ok &= expect("shell: sampler_stop(kernel only) = ", ours::sampler_stop(handle), Status::Ok);
+    // A round that saw no tick at all is run again; see
+    // SAMPLER_MAX_ROUNDS. A read that fails ends the rounds, for the
+    // read below to report.
+    auto rounds = u32{1};
+    if (ok) {
+        rounds = rerun_while_silent(handle, spin, [&read, &header] {
+            return read() != Status::Ok || header.num_unmatched > 0;
+        });
+        ok &= rounds != 0;
+    }
+    ok &= expect("shell: sampler_read(kernel only) = ", read(), Status::Ok);
     char digits[10];
-    auto _ = ort::debug_line({"shell: kernel-only session counted ",
-                              ort::decimal(static_cast<u32>(header.num_unmatched), digits),
-                              " unmatched ticks"});
+    report_rounds("shell: kernel-only session counted ",
+                  ort::decimal(static_cast<u32>(header.num_unmatched), digits), " unmatched ticks",
+                  rounds, began);
     ok &= header.num_unmatched > 0;
     auto _ = ours::handle_close(handle);
     return ok;
@@ -8017,25 +8094,41 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         usize actual = 0;
         ok &= expect("shell: sampler_stop(before start) = ", ours::sampler_stop(handle),
                      Status::BadState);
+        // Time to sample, with no call to sleep on: a loop of system calls,
+        // so that ticks land in kernel code as well as in this loop.
+        // 5000 took about 40 ms on dbg (2026-10-05) and 35 ms on rel
+        // (2026-11-18), some 35 periods on each CPU: a round with no sample
+        // at all means no timer interrupt reached the guest in it.
+        auto const syscalls = [] {
+            for (auto i = 0; i < 5'000; ++i) {
+                auto vmo = ours::Uandle::Invalid;
+                if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == Status::Ok) {
+                    auto _ = ours::handle_close(vmo);
+                }
+            }
+        };
+        auto const began = monotonic_ns();
         ok &= expect("shell: sampler_start = ", ours::sampler_start(handle), Status::Ok);
         ok &= expect("shell: sampler_start(running) = ", ours::sampler_start(handle),
                      Status::BadState);
         ok &= expect("shell: sampler_read(running) = ",
                      ours::sampler_read(handle, nullptr, 0, &actual), Status::BadState);
-        // Time to sample, with no call to sleep on: a loop of system calls,
-        // so that ticks land in kernel code as well as in this loop.
-        // 5000 took about 40 ms on dbg (2026-10-05), some four ticks on
-        // each CPU: enough that a run with no sample at all means a fault,
-        // not bad luck.
-        for (auto i = 0; i < 5'000; ++i) {
-            auto vmo = ours::Uandle::Invalid;
-            if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == Status::Ok) {
-                auto _ = ours::handle_close(vmo);
-            }
-        }
+        syscalls();
         ok &= expect("shell: sampler_stop = ", ours::sampler_stop(handle), Status::Ok);
         ok &=
             expect("shell: sampler_stop(stopped) = ", ours::sampler_stop(handle), Status::BadState);
+        // A round that caught no record is run again; see
+        // SAMPLER_MAX_ROUNDS. A size query that fails ends the rounds,
+        // for the one below to report.
+        auto rounds = u32{1};
+        if (ok) {
+            rounds = rerun_while_silent(handle, syscalls, [handle] {
+                auto size = usize{0};
+                return ours::sampler_read(handle, nullptr, 0, &size) != Status::Ok ||
+                       size > HEADER_SIZE;
+            });
+            ok &= rounds != 0;
+        }
 
         // The read: the size, a buffer one byte short, then the dump.
         static u8 DUMP[HEADER_SIZE + 16 * RECORDS_PER_CPU * RECORD_SIZE];
@@ -8058,8 +8151,8 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         ok &= records == (needed - HEADER_SIZE) / RECORD_SIZE;
         ok &= records > 0;
         char digits[10];
-        auto _ =
-            ort::debug_line({"shell: sampler read ", ort::decimal(records, digits), " records"});
+        report_rounds("shell: sampler read ", ort::decimal(records, digits), " records", rounds,
+                      began);
 
         // Closing the last handle while the session runs stops and ends it.
         ok &= expect("shell: sampler_start(again) = ", ours::sampler_start(handle), Status::Ok);
