@@ -343,9 +343,11 @@ class PmNode {
     /// below its floor and wants it reclaimed. True when this is the first
     /// mark since take_reclaim_target() last took the node's record, and the
     /// caller then wakes whatever takes it; false when an earlier mark is
-    /// still waiting, and its wake has already gone out. The node only
-    /// records: it wakes nothing itself, so it does not depend on the
-    /// reclaimer above it (MemoryReclaimer::request() is the caller).
+    /// still waiting, whose wake has gone out, or goes out when the reclaimer
+    /// starts or the last Pause ends. The node only records: it wakes nothing
+    /// itself, so it does not depend on the reclaimer above it (the pipeline's
+    /// observe_pressure() is the caller, and signals the event the reclaimer
+    /// registered with set_reclaim_signal()).
     [[nodiscard]]
     auto mark_short(PmZone const &zone) -> bool;
 

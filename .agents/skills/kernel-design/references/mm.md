@@ -278,18 +278,19 @@ background reclaimer resamples queued zones and walks the selected node's
 page queues. Admission and waits use the global gate. The node-scoped
 reclaim request is advisory and preserves the immediate allocation result.
 
-A block attempt carries its optional depleted zone in its typed failure.
-Each node records its short zones in one atomic word, a bit per zone
-type (2026-11-14, N2): `MemoryReclaimer::request(zone)` marks it and
-signals when the mark is the node's first since the thread took it, and
-the thread takes it with `PmNode::take_reclaim_target()`. The node never
-calls the reclaimer. The checks that drop a report (not started, paused)
-come before the mark, so a record that is not empty always has a wake on
-its way; while a Pause lives the thread takes no record (the take asks
-`paused()` under `m_take_lock`, which a Pause takes as it begins), a
-record taken just before is walked rather than dropped, and the last
-Pause to end wakes it. Owner-directed block return requires a frame
-reference at the zone boundary.
+A block attempt carries its optional depleted zone in its typed failure. Each
+node records its short zones in one atomic word, a bit per zone type
+(2026-11-14, N2): the pipeline's `observe_pressure()` marks it and, when the
+mark is the node's first since the record was taken, signals the event the
+reclaimer registered (`set_reclaim_signal()`, 2026-11-18, review minor item 29);
+the thread takes it with `PmNode::take_reclaim_target()`. Neither the node nor
+the PMM calls the reclaimer. A mark is made whether or not the reclaimer
+listens: one made before it registers is taken when it starts, since it wakes
+itself once then, and one made while a Pause lives is kept; the thread takes no
+record while a Pause lives (the take asks `paused()` under `m_take_lock`, which
+a Pause takes as it begins), a record taken just before is walked rather than
+dropped, and the last Pause to end wakes the thread to take what was kept.
+Owner-directed block return requires a frame reference at the zone boundary.
 
 ## PMM allocation pipeline (user decision, 2026-11-10)
 
@@ -321,14 +322,12 @@ a step is in, the code still has the shape described above.
   `PmZone::admits()` stays a public query. The watermark setup is
   `PmZone::setup_all_watermarks()`, a static of the zone table beside
   `create_all()` that needs no key; the per-zone steps are private.
-- The PMM calls up to one service, the reclaimer, through its singleton
-  (`observe_pressure()` calls `MemoryReclaimer::request(zone)`); the watchdog is
-  handed down as an event (`set_free_memory_signal()`). The asymmetry is kept on
-  purpose (review minor item 29, 2026-11-17): the reclaimer drops a report while
-  a Pause lives, before it marks (`request(zone)`), and a mark made under the
-  PMM would no longer be dropped, but kept and taken after the Pause. Waiters
-  for a frame are `FrameWaiters`, not the gate's: the gate admits and signals
-  the watcher, and wakes one waiter when it is armed again.
+- The PMM calls up to no service: the watchdog and the reclaimer both hand it
+  an event (`set_free_memory_signal()`, `set_reclaim_signal()`; the second
+  since 2026-11-18, review minor item 29, the user's option A after first
+  keeping the singleton call). Waiters for a frame are `FrameWaiters`, not the
+  gate's: the gate admits and signals the watcher, and wakes one waiter when it
+  is armed again.
 - The public PMM interface takes primitive parameters, as Linux's
   `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
   count, a node id. Never a compound structure as a parameter; the user
