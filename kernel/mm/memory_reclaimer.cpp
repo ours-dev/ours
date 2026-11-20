@@ -5,6 +5,7 @@
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/task/thread.hpp>
 
 #include <gktl/init_hook.hpp>
@@ -29,7 +30,14 @@ auto MemoryReclaimer::start() -> Status {
     }
     auto _ = thread->detach();
     auto const status = thread->resume();
-    m_started.store(status == Status::Ok, std::memory_order_release);
+    if (status == Status::Ok) {
+        // From here a node's first mark wakes the thread. Woken once now as
+        // well, for the marks made before: the PMM records a short zone
+        // whether or not anyone is registered, and those records found no
+        // one to wake.
+        set_reclaim_signal(&m_signal);
+        m_signal.signal();
+    }
     return status;
 }
 
@@ -42,26 +50,6 @@ auto MemoryReclaimer::request(usize const frames) -> void {
            !m_wanted.compare_exchange_weak(wanted, frames, std::memory_order_acq_rel)) {
     }
     m_signal.signal();
-}
-
-auto MemoryReclaimer::request(PmZone const &zone) -> void {
-    // Checked before the mark, not after. A mark nothing will take stays
-    // set, and every later mark on that node then answers that a wake has
-    // already gone out -- so a report dropped after marking would swallow the
-    // wakes of all the reports after it. A Pause that begins after this check
-    // finds a mark whose wake goes out anyway; the thread's take is refused
-    // while the Pause lives (take_node_target()), and the last Pause to end
-    // wakes it to take the mark then.
-    if (!m_started.load(std::memory_order_acquire) || paused()) {
-        return;
-    }
-    // The node records; the wake is this reclaimer's own. Every mark that
-    // finds the record empty is followed by a signal, so a record that is not
-    // empty always has a wake on its way to the thread, and the event keeps
-    // a signal that finds the thread busy.
-    if (find_node(zone.which_node())->mark_short(zone)) {
-        m_signal.signal();
-    }
 }
 
 MemoryReclaimer::Pause::Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {

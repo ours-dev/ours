@@ -15,7 +15,6 @@
 
 namespace ours::mm {
 class PmNode;
-class PmZone;
 
 /// Gives memory back when the memory watchdog says it runs short: the pages
 /// that all-zero anonymous memory holds, then the clean pages a page source
@@ -27,8 +26,10 @@ class PmZone;
 /// of its source again when it is needed.
 ///
 /// The watchdog requests global background work at Warning and Critical and
-/// reclaims synchronously at OutOfMemory. An eligible zone short of frames can
-/// also request background work on its own node. One reclaim walk runs at a time.
+/// reclaims synchronously at OutOfMemory. A zone an allocation finds short is
+/// recorded on its node by the PMM, which wakes the thread through the event
+/// the reclaimer registers (set_reclaim_signal()); the thread then walks that
+/// node alone. One reclaim walk runs at a time.
 class MemoryReclaimer {
     using Self = MemoryReclaimer;
 
@@ -46,15 +47,6 @@ class MemoryReclaimer {
     /// the thread has not taken keep the larger. Each is a distance from the
     /// free memory just read, and the thread has not run between them.
     auto request(usize frames) -> void;
-
-    /// Records a shortage an allocation observed in |zone|, in the zone's
-    /// node (PmNode::mark_short()), and wakes the thread when that is the
-    /// node's first mark since the thread last took its record. The thread
-    /// takes each node's record (PmNode::take_reclaim_target()), which reads
-    /// the marked zones again, and walks only that node's page queues.
-    /// Dropped while the thread is not running, since nothing would take the
-    /// mark, and while a Pause lives, as an ask is then.
-    auto request(PmZone const &zone) -> void;
 
     /// Gives back up to |frames| frames now, on the calling thread: zero
     /// pages on every node first, then pager pages on every node. How many
@@ -78,15 +70,15 @@ class MemoryReclaimer {
 
     /// While one is alive nothing new is reclaimed: request() is dropped,
     /// reclaim() refuses, and the thread takes no node's record of short
-    /// zones, so a test can read one undisturbed. For a test that drives the
-    /// watchdog to pressures free memory is not at, and wants to see it
-    /// decide and not what reclaiming does to the answer.
+    /// zones, so a test can read one undisturbed. A zone found short meanwhile
+    /// is still recorded on its node (the PMM marks it); the record waits, and
+    /// the last Pause to end wakes the thread, which takes it. For a test that
+    /// drives the watchdog to pressures free memory is not at, and wants to
+    /// see it decide and not what reclaiming does to the answer.
     ///
     /// What had already started runs to its end: a walk under way, and the
     /// walk of a record the thread took before the Pause began (a record is
-    /// never taken and then dropped). A report that passed its check just
-    /// before the Pause began can still mark a node; the last Pause to end
-    /// wakes the thread, which takes it.
+    /// never taken and then dropped).
     class Pause {
       public:
         explicit Pause(MemoryReclaimer &reclaimer);
@@ -124,8 +116,6 @@ class MemoryReclaimer {
 
     /// What has been asked and not yet taken by the thread.
     std::atomic<usize> m_wanted{0};
-
-    std::atomic<bool> m_started{false};
 
     std::atomic<usize> m_pauses{0};
 

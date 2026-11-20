@@ -5,7 +5,6 @@
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -120,6 +119,9 @@ namespace {
     };
 
     FrameWaiters WAITERS;
+
+    /// The reclaimer's wake (set_reclaim_signal()); null until it starts.
+    std::atomic<sync::Event *> RECLAIM_SIGNAL{nullptr};
 
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
@@ -386,11 +388,22 @@ namespace {
 
     /// Looks at free memory once, after a whole allocation or return and with
     /// no zone lock held: signals the watcher when its bounds were left, and
-    /// asks the reclaimer for the node of a zone an allocation found short.
+    /// records a zone an allocation found short on its node, signalling the
+    /// event the reclaimer registered on the node's first mark.
     auto observe_pressure(ustl::Option<PmZone const &> depleted_zone = ustl::NONE) -> void {
         GATE.check_signal();
-        if (depleted_zone) {
-            MemoryReclaimer::get().request(*depleted_zone);
+        if (!depleted_zone) {
+            return;
+        }
+        // The node records the shortage, and the first mark since the record
+        // was last taken wakes whoever registered to take it. The mark is
+        // made whether or not anyone has: the reclaimer takes what was
+        // recorded before it registered, and what is recorded while it is
+        // paused once the last Pause ends.
+        if (find_node(depleted_zone->which_node())->mark_short(*depleted_zone)) {
+            if (auto *const event = RECLAIM_SIGNAL.load(std::memory_order_acquire)) {
+                event->signal();
+            }
         }
     }
 
@@ -766,6 +779,10 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
                  "a delay level {} above the lower bound {}: the gate could shut unsignalled",
                  delay_level, lower);
     return GATE.set(lower, upper, delay_level, event, delayed);
+}
+
+auto set_reclaim_signal(sync::Event *const event) -> void {
+    RECLAIM_SIGNAL.store(event, std::memory_order_release);
 }
 
 /// The node the calling CPU belongs to. Called from kmalloc and
