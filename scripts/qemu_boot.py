@@ -15,6 +15,8 @@ single install_name.
 Environment:
     OUT     build directory (default: out/bringup.x86)
     IMAGE   .obi to boot (default: $OUT/kernel.dev.obi)
+    SHIM    the phys boot shim GRUB loads first (default: where the build puts
+            it under $OUT); a GitHub Release ships it beside the images
     WORK    scratch directory for the ESP (default: /tmp/ours-boot)
     SMP     CPU count (default: 4; 8 under NUMA)
     MEM     megabytes (default: 512; 1024 under NUMA; just under 1 GiB,
@@ -59,6 +61,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Where the build puts the phys boot shim, relative to the build directory: GRUB
+# loads it as the Multiboot2 kernel and it loads the image. scripts/ci.py
+# publishes it from here too, so a release carries what booting needs.
+SHIM = "kernel.phys_x86.phys.dbg_0/obj/kernel/arch/x86/phys/bootshim/bootshim"
 
 # The layout NUMA=1 builds, kept from //.legacy/ours-dev/scripts/shell/runvm.sh
 # because its distance matrix is deliberately not uniform -- a kernel that only
@@ -241,8 +248,7 @@ def main(argv: list[str]) -> int:
     out = Path(os.environ.get("OUT") or ROOT / "out/bringup.x86")
     image = Path(os.environ.get("IMAGE") or out / "kernel.dev.obi")
     work = Path(os.environ.get("WORK") or "/tmp/ours-boot")
-    shim = out / ("kernel.phys_x86.phys.dbg_0/obj/kernel/arch/x86/phys/"
-                  "bootshim/bootshim")
+    shim = Path(os.environ.get("SHIM") or out / SHIM)
 
     if not shim.is_file():
         die(f"missing shim: {shim}")

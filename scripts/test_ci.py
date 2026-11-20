@@ -114,6 +114,9 @@ class ArtifactsTest(unittest.TestCase):
             elf = self.out / "obj" / name / "vmours"
             elf.parent.mkdir(parents=True)
             elf.write_bytes(b"\x7fELF")
+        shim = self.out / ci.SHIM
+        shim.parent.mkdir(parents=True)
+        shim.write_bytes(b"\x7fELF shim")
         self.logs = self.base / "logs"
         self.logs.mkdir()
         (self.logs / "dbg.log").write_text("boot\n")
@@ -128,13 +131,13 @@ class ArtifactsTest(unittest.TestCase):
     def test_collects_what_gn_names_and_the_logs(self):
         self.assertEqual(ci.collect(self.out, self.dest), [])
         files = sorted(p.relative_to(self.dest).as_posix() for p in self.dest.rglob("*") if p.is_file())
-        self.assertEqual(files, ["SHA256SUMS", "debug/obj/dev.dbg_1/vmours", "debug/obj/dev/vmours",
+        self.assertEqual(files, ["SHA256SUMS", "bootshim", "debug/obj/dev.dbg_1/vmours", "debug/obj/dev/vmours",
                                  "kernel.dev.dbg_1.debug.json", "kernel.dev.dbg_1.obi",
                                  "kernel.dev.debug.json", "kernel.dev.obi", "logs/dbg.log"])
         sums = (self.dest / "SHA256SUMS").read_text().splitlines()
         # The top-level files a release publishes, not the logs or the ELFs.
         self.assertEqual(sorted(line.split("  ")[1] for line in sums),
-                         ["kernel.dev.dbg_1.debug.json", "kernel.dev.dbg_1.obi",
+                         ["bootshim", "kernel.dev.dbg_1.debug.json", "kernel.dev.dbg_1.obi",
                           "kernel.dev.debug.json", "kernel.dev.obi"])
 
     def test_a_failed_build_still_saves_the_logs(self):

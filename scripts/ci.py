@@ -27,8 +27,9 @@ the skill's, for a runner slower than a workstation.
 
 artifacts: copies into --dest (default out/ci-artifacts) the images named by
 the build's product_info.json, their .debug.json lists and the unstripped ELFs
-those name, and the boot and host-test logs, then writes SHA256SUMS for the
-files at the top (the images and their lists, what a release publishes). What
+those name, the boot shim GRUB loads before an image, and the boot and
+host-test logs, then writes SHA256SUMS for the files at the top (the images,
+their lists and the shim: what a release publishes). What
 it copies comes from GN's metadata, so a new image needs no edit here. A file
 that is missing, after a failed build, is reported and skipped.
 
@@ -57,6 +58,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from boot_logdir import log_directory  # noqa: E402
 from gitdiff import BASE_VARIABLE, git_env  # noqa: E402
+from qemu_boot import SHIM  # noqa: E402
 
 DEFAULT_OUT = "out/ci.x86"
 DEFAULT_DEST = "out/ci-artifacts"
@@ -168,6 +170,8 @@ def collect(out: Path, dest: Path) -> list[str]:
             for entry in json.loads(listing.read_text(encoding="utf-8")):
                 if "debug" in entry:
                     copy(out / entry["debug"], dest / "debug" / entry["debug"], missing)
+    # Not an image, but nothing boots without it (scripts/qemu_boot.py).
+    copy(out / SHIM, dest / "bootshim", missing)
     logs = log_directory("ours-verify", out.resolve())
     for log in sorted(logs.glob("*.log")) if logs.is_dir() else []:
         copy(log, dest / "logs" / log.name, missing)
