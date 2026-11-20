@@ -134,3 +134,49 @@ None
 - Why does a checker that compares against HEAD see nothing on a CI runner, and why is the merge base, not REV itself, the right thing to compare against?
 - Why must the changed-lines check stay changed-lines in CI instead of checking whole files?
 - What would a test of `artifacts` have to contain to catch the `KeyError` the first dry run hit?
+
+## The CI workflow runs on GitHub, green on the baseline (2026-11-20)
+
+**Files**
+- `.github/workflows/ci.yaml` — replaced the 9-line stub: checkout with submodules, a venv with `scripts/requirements.txt`, the prebuilt and ccache caches, `python3 scripts/ci.py all`, artifacts.
+- `.agents/tasks/ci-pipeline/DESIGN.md`, `PLAN.md` — decision D6 (artifact upload).
+
+**Symptom**
+Latent until the first run: nothing had ever built this tree on a machine other than the user's Mac.
+
+**Cause**
+Each of the five red runs before the first green one found something a clean macOS machine does not share with the user's:
+- A secret meant for the private `lockdep` submodule reached the job empty, twice: the repository had no Actions repository secret. Resolved by the user making every `ours-dev` repository public (2026-11-18), after a scan of their full histories for credentials found none; the token step was deleted.
+- The runner's Python had no PyYAML, so `scripts/test_activate.py` could not import `activate.py`. The job now makes a venv from `scripts/requirements.txt` (the runner's Homebrew Python refuses a plain `pip install`).
+- On macos-15 the host tool `obit` failed to link: `std::__1::__hash_memory` is called by LLVM 23's libc++ headers but exported only by the libc++ of macOS 26 and later. The runner moved to `macos-26`; the real fix is item 1 of `docs/repairs/261117/ci.md`.
+- On macos-26 both boots failed: the loaded 3-core runner dropped periodic ticks and APIC calibration refused the timer. Fixed in the kernel, the Linux way (`docs/changes/261118/x86-clock.md`, commit 6e58e3d3).
+- The first baseline push (87 commits) failed `lint-docs` on an older task document whose Status the linter does not accept, fixed in 0253cf5d: a push is checked over its whole range, so the first push of a long-unpushed branch also checks documents committed long ago.
+
+**Change**
+The workflow only checks out, restores caches and calls `scripts/ci.py`, so every failure above was read from `ci.py`'s summary lines and reproduced locally with the same command. Actions are pinned by commit. The prebuilt cache is saved right after the fetch, not at the end of the job, so a red run does not download 3.5 GB again; ccache is saved on every run. Images, logs and `SHA256SUMS` are uploaded every run (2.3 MB); the unstripped ELFs (51 MB zipped) only when a run fails (D6). `ci/**` branches also trigger the workflow, because `workflow_dispatch` appears only once the file is on the default branch and a change to the workflow needs somewhere to be tried.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `ci/probe` at 6e58e3d3, run 44332760950: green, 2 min 43 s with warm caches (build 32.4 s from ccache; dbg and rel PASS; 185 host tests).
+- `baseline/20260824` at 0253cf5d, run 44727304051: green, 7 min 50 s (45 files checked; build 322.9 s with a cold ccache for that branch; dbg PASS 46 passed, rel PASS 44 passed, 7/7 required; 185 host tests; 32 artifact files).
+- Red runs produced what a red run should: run 44356406563 named the failing check and uploaded both the logs artifact (2.3 MB) and the ELF artifact (51 MB); the ELF artifact is absent from the green runs.
+- Cold toolchain fetch on the runner: 6 min 15 s, then 13 s to restore from cache.
+- The deliberate red probe of the plan was not run: the real red runs above showed the same thing.
+
+**Deliberately not done**
+- The libc++ fix that would let the runner go back to macos-15 (repair item, a build-system change of its own).
+- The intermittent `shell: sampler read 0 records` seen once in run 44356406563 is in its own session, not here.
+- No branch protection (non-goal).
+
+**How it was found**
+Five successive GitHub runs, each read through `ci.py`'s summary lines and, for the boots, the logs artifact downloaded with `gh run download`.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why did a host tool link on the user's Mac but not on a macOS 15 runner, though both used the same pinned compiler?
+- Why is the prebuilt cache saved immediately after the fetch instead of at the end of the job?
+- Why can the first push of a branch fail a document check that every later push would pass?
