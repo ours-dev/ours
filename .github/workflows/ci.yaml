@@ -14,6 +14,14 @@ on:
   pull_request:
     branches: [main, "baseline/**"]
   workflow_dispatch:
+  # release.yaml runs this same job for a version tag, so a release is built
+  # and booted exactly the way every push is.
+  workflow_call:
+    inputs:
+      mode:
+        description: "all (the default: check, verify, artifacts) or release (verify, artifacts)"
+        type: string
+        default: all
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -76,8 +84,18 @@ jobs:
             ccache-${{ github.ref_name }}-
             ccache-baseline/
 
+      # A push or a pull request has a base to check from; a tag has none,
+      # and its commit was checked when it was pushed (scripts/ci.py).
       - name: ci
-        run: python3 scripts/ci.py all --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+        env:
+          MODE: ${{ inputs.mode || 'all' }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "$MODE" = release ]; then
+            python3 scripts/ci.py release
+          else
+            python3 scripts/ci.py all --base "$BASE"
+          fi
 
       - if: always()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

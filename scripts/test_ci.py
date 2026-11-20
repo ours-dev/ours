@@ -132,8 +132,10 @@ class ArtifactsTest(unittest.TestCase):
                                  "kernel.dev.dbg_1.debug.json", "kernel.dev.dbg_1.obi",
                                  "kernel.dev.debug.json", "kernel.dev.obi", "logs/dbg.log"])
         sums = (self.dest / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 7)
-        self.assertTrue(any(line.endswith("  kernel.dev.obi") for line in sums))
+        # The top-level files a release publishes, not the logs or the ELFs.
+        self.assertEqual(sorted(line.split("  ")[1] for line in sums),
+                         ["kernel.dev.dbg_1.debug.json", "kernel.dev.dbg_1.obi",
+                          "kernel.dev.debug.json", "kernel.dev.obi"])
 
     def test_a_failed_build_still_saves_the_logs(self):
         (self.out / "kernel.dev.obi").unlink()

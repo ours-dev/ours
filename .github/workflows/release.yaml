@@ -1,0 +1,41 @@
+# Publish a GitHub Release for every version tag (v1, v0.3.0, ...): the two boot
+# images, the lists of unstripped ELFs that went into them, and SHA256SUMS. The
+# images are built and booted by ci.yaml's own job, called in release mode, so
+# nothing is published that did not boot.
+#
+# Actions are pinned by commit, not tag, because a tag can be moved.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yaml
+    with:
+      mode: release
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Creating a release is the only write this repository grants a workflow.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: ours-${{ github.sha }}
+          path: release
+      # SHA256SUMS lists exactly the top-level files, so this publishes
+      # everything it vouches for and nothing it does not.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --generate-notes \
+            $(cut -d' ' -f3 SHA256SUMS) SHA256SUMS

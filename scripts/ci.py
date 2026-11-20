@@ -5,6 +5,7 @@
     python3 scripts/ci.py verify [--out DIR] [--timeout SECONDS]
     python3 scripts/ci.py artifacts [--out DIR] [--dest DIR]
     python3 scripts/ci.py all --base REV [--out DIR] [--timeout SECONDS] [--dest DIR]
+    python3 scripts/ci.py release [--out DIR] [--timeout SECONDS] [--dest DIR]
 
 The workflow under .github/workflows only checks out, restores caches and calls
 this, so a red run is reproduced by running the same command locally.
@@ -26,13 +27,18 @@ the skill's, for a runner slower than a workstation.
 
 artifacts: copies into --dest (default out/ci-artifacts) the images named by
 the build's product_info.json, their .debug.json lists and the unstripped ELFs
-those name, and the boot and host-test logs, then writes SHA256SUMS. What it
-copies comes from GN's metadata, so a new image needs no edit here. A file that
-is missing, after a failed build, is reported and skipped.
+those name, and the boot and host-test logs, then writes SHA256SUMS for the
+files at the top (the images and their lists, what a release publishes). What
+it copies comes from GN's metadata, so a new image needs no edit here. A file
+that is missing, after a failed build, is reported and skipped.
 
 all: check, verify and artifacts, in that order. Every one runs whatever the
 ones before it found, so one run shows a format slip and a failing boot
 together; the exit status is 1 if any failed.
+
+release: verify and artifacts, for a version tag. There is no check: a tag has
+no "before" to diff against, and the commit it names was checked when it was
+pushed.
 """
 from __future__ import annotations
 
@@ -166,7 +172,7 @@ def collect(out: Path, dest: Path) -> list[str]:
     for log in sorted(logs.glob("*.log")) if logs.is_dir() else []:
         copy(log, dest / "logs" / log.name, missing)
     sums = []
-    for path in sorted(p for p in dest.rglob("*") if p.is_file()):
+    for path in sorted(p for p in dest.iterdir() if p.is_file()):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         sums.append(f"{digest}  {path.relative_to(dest).as_posix()}\n")
     (dest / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
@@ -187,26 +193,26 @@ def artifacts(out: str, dest: str) -> bool:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("check", "verify", "artifacts", "all"):
+    for name in ("check", "verify", "artifacts", "all", "release"):
         command = sub.add_parser(name)
         if name in ("check", "all"):
             command.add_argument("--base", required=True,
                                  help="the revision the push or pull request starts from")
-        if name in ("verify", "artifacts", "all"):
+        if name in ("verify", "artifacts", "all", "release"):
             command.add_argument("--out", default=DEFAULT_OUT, help=f"build directory (default: {DEFAULT_OUT})")
-        if name in ("verify", "all"):
+        if name in ("verify", "all", "release"):
             command.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                                  help=f"seconds per boot (default: {DEFAULT_TIMEOUT})")
-        if name in ("artifacts", "all"):
+        if name in ("artifacts", "all", "release"):
             command.add_argument("--dest", default=DEFAULT_DEST, help=f"where artifacts go (default: {DEFAULT_DEST})")
     args = parser.parse_args(argv)
 
     results = []
     if args.command in ("check", "all"):
         results.append(check(args.base))
-    if args.command in ("verify", "all"):
+    if args.command in ("verify", "all", "release"):
         results.append(verify(args.out, args.timeout))
-    if args.command in ("artifacts", "all"):
+    if args.command in ("artifacts", "all", "release"):
         results.append(artifacts(args.out, args.dest))
     return 0 if all(results) else 1
 
