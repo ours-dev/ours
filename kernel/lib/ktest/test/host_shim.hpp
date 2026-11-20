@@ -6,7 +6,7 @@
 // reporter fills. The suite's host tests share it so that every file can run
 // real macro expansions through hsien's own record loop, which is the seam
 // the booted runner implements. The published state itself is the shared
-// stage runner's (../src/run_stage.hpp), the same slot the booted runner
+// stage runner's (<ktest/run_stage.hpp>), the same slot the booted runner
 // publishes.
 #ifndef KTEST_TEST_HOST_SHIM_HPP
 #define KTEST_TEST_HOST_SHIM_HPP 1

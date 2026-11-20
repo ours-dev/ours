@@ -210,19 +210,19 @@ TEST(KtestMatcherConcept, AStatusRendersThroughToString) {
 
 TEST(KtestMatcherVerdict, EachPassingFormCountsItsChecks) {
     FAILURES.clear();
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_ComparePasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_PointerPasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_StatusPasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_AllOfPasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_AnyOfPasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_AssertPasses).failures, usize{0});
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_EachArgumentOnce).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_ComparePasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_PointerPasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_StatusPasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_AllOfPasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_AnyOfPasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_AssertPasses_Test::record).failures, usize{0});
+    EXPECT_EQ(run_record(MatcherBodies_EachArgumentOnce_Test::record).failures, usize{0});
     EXPECT_EQ(FRAMEWORK_ERRORS, usize{0});
 }
 
 TEST(KtestMatcherVerdict, FailureNamesExpectationAndActual) {
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_MatcherBodies_CompareFails);
+    auto const outcome = run_record(MatcherBodies_CompareFails_Test::record);
     EXPECT_EQ(outcome.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     // The value expression as written, then what the matcher expected and
@@ -232,7 +232,7 @@ TEST(KtestMatcherVerdict, FailureNamesExpectationAndActual) {
 
 TEST(KtestMatcherVerdict, FailureCarriesTheAuthorsMessage) {
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_MatcherBodies_CompareFailsWithMessage);
+    auto const outcome = run_record(MatcherBodies_CompareFailsWithMessage_Test::record);
     EXPECT_EQ(outcome.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("actual 41 -- after 3 reads"), std::string::npos);
@@ -240,24 +240,24 @@ TEST(KtestMatcherVerdict, FailureCarriesTheAuthorsMessage) {
 
 TEST(KtestMatcherVerdict, PointerFailuresNameThePointerExpectation) {
     FAILURES.clear();
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_PointerFailsOnNonNull).failures, usize{1});
+    EXPECT_EQ(run_record(MatcherBodies_PointerFailsOnNonNull_Test::record).failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("expected a null pointer, actual"), std::string::npos);
     FAILURES.clear();
-    EXPECT_EQ(run_record(ktest_record_MatcherBodies_PointerFailsOnNull).failures, usize{1});
+    EXPECT_EQ(run_record(MatcherBodies_PointerFailsOnNull_Test::record).failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("expected a non-null pointer, actual"), std::string::npos);
 }
 
 TEST(KtestMatcherVerdict, StatusFailureNamesTheStatusThroughToString) {
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_MatcherBodies_StatusFails);
+    auto const outcome = run_record(MatcherBodies_StatusFails_Test::record);
     EXPECT_EQ(outcome.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     // The actual status renders as its to_string, not <unprintable>.
     EXPECT_NE(FAILURES[0].find("status: expected Status::Ok, actual InvArgs"), std::string::npos);
     FAILURES.clear();
-    auto const named = run_record(ktest_record_MatcherBodies_StatusFailsAgainstNamed);
+    auto const named = run_record(MatcherBodies_StatusFailsAgainstNamed_Test::record);
     EXPECT_EQ(named.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("status: expected equal to InvArgs, actual Ok"), std::string::npos);
@@ -265,14 +265,14 @@ TEST(KtestMatcherVerdict, StatusFailureNamesTheStatusThroughToString) {
 
 TEST(KtestMatcherVerdict, CombinatorFailureShowsTheWholeExpectation) {
     FAILURES.clear();
-    auto const all = run_record(ktest_record_MatcherBodies_AllOfFails);
+    auto const all = run_record(MatcherBodies_AllOfFails_Test::record);
     EXPECT_EQ(all.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("value: expected all of: greater than or equal to 40, less than "
                                "or equal to 45, actual 50"),
               std::string::npos);
     FAILURES.clear();
-    auto const any = run_record(ktest_record_MatcherBodies_AnyOfFails);
+    auto const any = run_record(MatcherBodies_AnyOfFails_Test::record);
     EXPECT_EQ(any.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});
     EXPECT_NE(FAILURES[0].find("value: expected any of: equal to 41, equal to 43, actual 42"),
@@ -281,7 +281,7 @@ TEST(KtestMatcherVerdict, CombinatorFailureShowsTheWholeExpectation) {
 
 TEST(KtestMatcherVerdict, AssertReturnsFromTheBody) {
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_MatcherBodies_AssertReturns);
+    auto const outcome = run_record(MatcherBodies_AssertReturns_Test::record);
     // One failure, and the message after the assert never ran.
     EXPECT_EQ(outcome.failures, usize{1});
     ASSERT_EQ(FAILURES.size(), usize{1});

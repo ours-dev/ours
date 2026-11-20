@@ -10,7 +10,7 @@
 // runner.cpp defines, stood in host_shim.hpp — is shared with the suite's
 // other file, so that both drive records the same way the booted runner
 // does. The stage framing itself is the shared stage runner's
-// (../src/run_stage.hpp): the same code the environment's default stages run
+// (<ktest/run_stage.hpp>): the same code the environment's default stages run
 // on the kernel.
 //
 // This file includes ktest.hpp first, so the fixture bodies write the
@@ -20,8 +20,8 @@
 // silenced here alone.
 #include <ktest/environment.hpp>
 #include <ktest/ktest.hpp>
+#include <ktest/run_stage.hpp>
 
-#include "../src/run_stage.hpp"
 #include "host_shim.hpp"
 
 #pragma clang diagnostic push
@@ -80,14 +80,14 @@ class NamedEnvironment: public ktest::Environment {
     NamedEnvironment(char const *const name = "", bool const setup_succeeds = true)
         : setup_ok(setup_succeeds), m_name(name) {}
 
-    void SetUp() {
+    void SetUp() override {
         LOG.push_back(std::string{m_name} + ".SetUp");
         if (!setup_ok) {
             KTEST_RECORD_MESSAGE("the environment could not come up");
         }
     }
 
-    void TearDown() {
+    void TearDown() override {
         LOG.push_back(std::string{m_name} + ".TearDown");
     }
 
@@ -278,7 +278,7 @@ TEST(KtestFixtureMacro, ExpansionShape) {
                   "the macro derives the test's class from the fixture");
     static_assert(std::is_base_of_v<ktest::Fixture<LifecycleFixture>, LifecycleFixture>,
                   "the fixture class roots itself in its own Fixture base");
-    auto const &record = ktest_record_LifecycleFixture_Orderly;
+    auto const &record = LifecycleFixture_Orderly_Test::record;
     EXPECT_STREQ(record.name, "LifecycleFixture.Orderly");
     EXPECT_NE(record.invoke, nullptr);
     EXPECT_TRUE(std::string_view{record.location.file_name()}.ends_with("fixture_test.cpp"));
@@ -288,7 +288,7 @@ TEST(KtestFixtureMacro, ExpansionShape) {
 TEST(KtestFixtureLifecycle, SetUpRunsBeforeBodyAndTearDownAfter) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_LifecycleFixture_Orderly);
+    auto const outcome = run_record(LifecycleFixture_Orderly_Test::record);
     EXPECT_EQ(outcome.failures, usize{0});
     EXPECT_FALSE(outcome.skipped);
     ASSERT_EQ(LOG.size(), usize{3});
@@ -300,7 +300,7 @@ TEST(KtestFixtureLifecycle, SetUpRunsBeforeBodyAndTearDownAfter) {
 TEST(KtestFixtureLifecycle, TearDownRunsAfterAFailedCheck) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_LifecycleFixture_BodyFails);
+    auto const outcome = run_record(LifecycleFixture_BodyFails_Test::record);
     EXPECT_EQ(outcome.failures, usize{1});
     EXPECT_EQ(LOG.size(), usize{3});
     EXPECT_EQ(LOG[2], "teardown");
@@ -311,7 +311,7 @@ TEST(KtestFixtureLifecycle, TearDownRunsAfterAFailedCheck) {
 TEST(KtestFixtureLifecycle, TearDownRunsAfterAnAssertReturned) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_LifecycleFixture_BodyAsserts);
+    auto const outcome = run_record(LifecycleFixture_BodyAsserts_Test::record);
     EXPECT_EQ(outcome.failures, usize{1});
     // The assert returned out of the body, so nothing after it ran, and
     // the teardown ran anyway.
@@ -322,7 +322,7 @@ TEST(KtestFixtureLifecycle, TearDownRunsAfterAnAssertReturned) {
 TEST(KtestFixtureLifecycle, SkipInTheBodyStillTearsDown) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_LifecycleFixture_BodySkips);
+    auto const outcome = run_record(LifecycleFixture_BodySkips_Test::record);
     EXPECT_EQ(outcome.failures, usize{0});
     EXPECT_TRUE(outcome.skipped);
     EXPECT_EQ(LOG.size(), usize{3});
@@ -333,7 +333,7 @@ TEST(KtestFixtureLifecycle, SetUpFailureLeavesTheBodyOut) {
     LOG.clear();
     FAILURES.clear();
     SETUP_FAILS_BODY_RAN = false;
-    auto const outcome = run_record(ktest_record_SetupFailsFixture_BodyIsLeftOut);
+    auto const outcome = run_record(SetupFailsFixture_BodyIsLeftOut_Test::record);
     // No body runs against state that was not built; the teardown undoes
     // what little the setup did.
     EXPECT_EQ(outcome.failures, usize{1});
@@ -347,7 +347,7 @@ TEST(KtestFixtureLifecycle, SetUpSkipLeavesTheBodyOut) {
     LOG.clear();
     FAILURES.clear();
     SETUP_SKIPS_BODY_RAN = false;
-    auto const outcome = run_record(ktest_record_SetupSkipsFixture_BodyIsLeftOut);
+    auto const outcome = run_record(SetupSkipsFixture_BodyIsLeftOut_Test::record);
     EXPECT_EQ(outcome.failures, usize{0});
     EXPECT_TRUE(outcome.skipped);
     EXPECT_FALSE(SETUP_SKIPS_BODY_RAN);
@@ -358,7 +358,7 @@ TEST(KtestFixtureLifecycle, SetUpSkipLeavesTheBodyOut) {
 TEST(KtestFixtureLifecycle, TearDownFailureFailsAPassingBody) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_TearDownFailsFixture_BodyPasses);
+    auto const outcome = run_record(TearDownFailsFixture_BodyPasses_Test::record);
     // The teardown's failure is the test's; the verdict says FAILED.
     EXPECT_EQ(outcome.failures, usize{1});
     ASSERT_EQ(LOG.size(), usize{2});
@@ -368,7 +368,7 @@ TEST(KtestFixtureLifecycle, TearDownFailureFailsAPassingBody) {
 TEST(KtestFixtureLifecycle, CountingCoversTheWholeLifecycle) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_TwoFailuresFixture_BodyAndTearDownFail);
+    auto const outcome = run_record(TwoFailuresFixture_BodyAndTearDownFail_Test::record);
     // Body and teardown land in one context, so the FAILED line can say
     // how many of the run's checks failed.
     EXPECT_EQ(outcome.failures, usize{2});
@@ -378,16 +378,16 @@ TEST(KtestFixtureLifecycle, CountingCoversTheWholeLifecycle) {
 TEST(KtestFixtureLifecycle, EachTestGetsAFreshFixture) {
     LOG.clear();
     FAILURES.clear();
-    auto const first = run_record(ktest_record_LifecycleFixture_Mutates);
+    auto const first = run_record(LifecycleFixture_Mutates_Test::record);
     EXPECT_EQ(first.failures, usize{0});
-    auto const second = run_record(ktest_record_LifecycleFixture_GetsAFreshFixture);
+    auto const second = run_record(LifecycleFixture_GetsAFreshFixture_Test::record);
     EXPECT_EQ(second.failures, usize{0});
 }
 
 TEST(KtestFixtureLifecycle, SetUpOnlyFixtureKeepsTheDefaultTearDown) {
     LOG.clear();
     FAILURES.clear();
-    auto const outcome = run_record(ktest_record_SetUpOnlyFixture_DefaultTearDownIsSilent);
+    auto const outcome = run_record(SetUpOnlyFixture_DefaultTearDownIsSilent_Test::record);
     EXPECT_EQ(outcome.failures, usize{0});
     ASSERT_EQ(LOG.size(), usize{2});
     EXPECT_EQ(LOG[0], "setup");
@@ -399,24 +399,24 @@ TEST(KtestFixtureSuite, SetupRunsOnceAroundTheSuitesTests) {
     FAILURES.clear();
     HOOKED_SUITE_SETUPS = 0;
 
-    ::hsien::TestRecord const records[] = {ktest_record_HookedFixture_First,
-                                           ktest_record_HookedFixture_Second};
-    ktest::internal::SuiteHook const hooks[] = {ktest_suite_setup_HookedFixture,
-                                                ktest_suite_teardown_HookedFixture};
+    ::hsien::TestRecord const records[] = {HookedFixture_First_Test::record,
+                                           HookedFixture_Second_Test::record};
+    ktest::internal::SuiteHook const hooks[] = {HookedFixture_SuiteSetUp::hook,
+                                                HookedFixture_SuiteTearDown::hook};
     auto plan =
         ktest::internal::SuitePlan{hooks + 0, hooks + 2, records + 0, records + 2, take_all};
     ASSERT_TRUE(plan.valid());
 
     // The run loop's ask-sequence, over the plan, with the real hooks.
-    auto *const setup = plan.before(ktest_record_HookedFixture_First.name);
+    auto *const setup = plan.before(HookedFixture_First_Test::record.name);
     ASSERT_TRUE(setup != nullptr);
     run_suite_hook(*setup);
-    run_record(ktest_record_HookedFixture_First);
-    EXPECT_TRUE(plan.after(ktest_record_HookedFixture_First.name) == nullptr);
+    run_record(HookedFixture_First_Test::record);
+    EXPECT_TRUE(plan.after(HookedFixture_First_Test::record.name) == nullptr);
     // The suite setup runs once, not per test.
-    EXPECT_TRUE(plan.before(ktest_record_HookedFixture_Second.name) == nullptr);
-    run_record(ktest_record_HookedFixture_Second);
-    auto *const teardown = plan.after(ktest_record_HookedFixture_Second.name);
+    EXPECT_TRUE(plan.before(HookedFixture_Second_Test::record.name) == nullptr);
+    run_record(HookedFixture_Second_Test::record);
+    auto *const teardown = plan.after(HookedFixture_Second_Test::record.name);
     ASSERT_TRUE(teardown != nullptr);
     run_suite_hook(*teardown);
 
@@ -437,10 +437,10 @@ TEST(KtestFixtureSuite, PoisonedSuiteKeepsItsTeardown) {
     FAILURES.clear();
     HOOKED_SUITE_SETUPS = 0;
 
-    ::hsien::TestRecord const records[] = {ktest_record_HookedFixture_First,
-                                           ktest_record_HookedFixture_Second};
-    ktest::internal::SuiteHook const hooks[] = {ktest_suite_setup_HookedFixture,
-                                                ktest_suite_teardown_HookedFixture};
+    ::hsien::TestRecord const records[] = {HookedFixture_First_Test::record,
+                                           HookedFixture_Second_Test::record};
+    ktest::internal::SuiteHook const hooks[] = {HookedFixture_SuiteSetUp::hook,
+                                                HookedFixture_SuiteTearDown::hook};
     auto plan =
         ktest::internal::SuitePlan{hooks + 0, hooks + 2, records + 0, records + 2, take_all};
     ASSERT_TRUE(plan.valid());
@@ -448,14 +448,14 @@ TEST(KtestFixtureSuite, PoisonedSuiteKeepsItsTeardown) {
     // A failed setup poisons the suite: the runner reports each of its
     // tests without running it, and the teardown still unwinds after the
     // last of them. The walk below is the run loop's ask-sequence.
-    auto *const setup = plan.before(ktest_record_HookedFixture_First.name);
+    auto *const setup = plan.before(HookedFixture_First_Test::record.name);
     ASSERT_TRUE(setup != nullptr);
-    plan.poison(ktest_record_HookedFixture_First.name);
-    EXPECT_TRUE(plan.poisoned(ktest_record_HookedFixture_Second.name));
+    plan.poison(HookedFixture_First_Test::record.name);
+    EXPECT_TRUE(plan.poisoned(HookedFixture_Second_Test::record.name));
     // The suite setup is asked about once; both tests report failed.
-    EXPECT_TRUE(plan.before(ktest_record_HookedFixture_Second.name) == nullptr);
-    EXPECT_TRUE(plan.after(ktest_record_HookedFixture_First.name) == nullptr);
-    EXPECT_TRUE(plan.after(ktest_record_HookedFixture_Second.name) != nullptr);
+    EXPECT_TRUE(plan.before(HookedFixture_Second_Test::record.name) == nullptr);
+    EXPECT_TRUE(plan.after(HookedFixture_First_Test::record.name) == nullptr);
+    EXPECT_TRUE(plan.after(HookedFixture_Second_Test::record.name) != nullptr);
     EXPECT_EQ(HOOKED_SUITE_SETUPS, usize{0});
     EXPECT_TRUE(LOG.empty());
 }

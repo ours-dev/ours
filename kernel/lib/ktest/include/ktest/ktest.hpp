@@ -33,20 +33,21 @@
 #define KTEST_JOIN(left, right) left##right
 
 #define KTEST_DEFINE(suite_token, name_token, line_number)                                         \
-    static void KTEST_JOIN(ktest_body_, line_number)();                                            \
-    namespace {                                                                                    \
-    void KTEST_JOIN(ktest_invoke_, line_number)(::hsien::Context & context) {                      \
-        ::ktest::internal::BindScope const scope(context);                                         \
-        KTEST_JOIN(ktest_body_, line_number)();                                                    \
-    }                                                                                              \
-    LINK_SECTION(".hsien.tests")                                                                   \
-    FORCE_USED static ::hsien::TestRecord const KTEST_JOIN(ktest_record_, line_number) = {         \
-        .name = #suite_token "." #name_token,                                                      \
-        .invoke = KTEST_JOIN(ktest_invoke_, line_number),                                          \
-        .location = ::std::source_location::current(),                                             \
+    class suite_token##_##name_token##_Test {                                                      \
+      public:                                                                                      \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
+            ::ktest::internal::BindScope const scope(context);                                     \
+            body();                                                                                \
+        }                                                                                          \
+        static void body();                                                                        \
+        LINK_SECTION(".hsien.tests")                                                               \
+        FORCE_USED static inline ::hsien::TestRecord const record = {                              \
+            .name = #suite_token "." #name_token,                                                  \
+            .invoke = &invoke,                                                                     \
+            .location = ::std::source_location::current(),                                         \
+        };                                                                                         \
     };                                                                                             \
-    }                                                                                              \
-    static void KTEST_JOIN(ktest_body_, line_number)()
+    void suite_token##_##name_token##_Test::body()
 
 #define KTEST(suite, name) KTEST_DEFINE(suite, name, __LINE__)
 
@@ -67,19 +68,20 @@
 #define KTEST_DEATH(suite, name) KTEST_DEATH_DEFINE(suite, name, __LINE__)
 
 #define KTEST_DEATH_DEFINE(suite_token, name_token, line_number)                                   \
-    static void KTEST_JOIN(ktest_death_body_, line_number)();                                      \
-    namespace {                                                                                    \
-    void KTEST_JOIN(ktest_death_invoke_, line_number)(::hsien::Context & context) {                \
-        ::ktest::internal::BindScope const scope(context);                                         \
-        KTEST_JOIN(ktest_death_body_, line_number)();                                              \
-    }                                                                                              \
-    KTEST_RECORD_SECTION(".ktest.death")                                                           \
-    FORCE_USED static ::hsien::TestRecord const KTEST_JOIN(ktest_death_record_, line_number) = {   \
-        .name = #suite_token "." #name_token,                                                      \
-        .invoke = KTEST_JOIN(ktest_death_invoke_, line_number),                                    \
-        .location = ::std::source_location::current(),                                             \
+    class suite_token##_##name_token##_DeathTest {                                                 \
+      public:                                                                                      \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
+            ::ktest::internal::BindScope const scope(context);                                     \
+            body();                                                                                \
+        }                                                                                          \
+        static void body();                                                                        \
+        KTEST_RECORD_SECTION(".ktest.death")                                                       \
+        FORCE_USED static inline ::hsien::TestRecord const record = {                              \
+            .name = #suite_token "." #name_token,                                                  \
+            .invoke = &invoke,                                                                     \
+            .location = ::std::source_location::current(),                                         \
+        };                                                                                         \
     };                                                                                             \
-    }                                                                                              \
-    static void KTEST_JOIN(ktest_death_body_, line_number)()
+    void suite_token##_##name_token##_DeathTest::body()
 
 #endif // #ifndef KTEST_KTEST_HPP

@@ -17,7 +17,9 @@ cpp_interface("headers") {
     "include/ktest/matchers.hpp",
     "include/ktest/options.hpp",
     "include/ktest/run_plan.hpp",
+    "include/ktest/run_stage.hpp",
     "include/ktest/run_state.hpp",
+    "include/ktest/session.hpp",
     "include/ktest/summary.hpp",
   ]
   public_deps = [

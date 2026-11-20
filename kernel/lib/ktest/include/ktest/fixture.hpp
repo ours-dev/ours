@@ -332,31 +332,28 @@ namespace internal {
     class fixture_class##_##name_token##_Test final: public fixture_class {                        \
       public:                                                                                      \
         void ktest_body();                                                                         \
-    };                                                                                             \
-    namespace {                                                                                    \
-        static fixture_class##_##name_token##_Test                                                 \
-            ktest_instance_##fixture_class##_##name_token{};                                       \
-        void ktest_invoke_##fixture_class##_##name_token(::hsien::Context &context) {              \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
             ::ktest::internal::BindScope const scope(context);                                     \
             auto const failures_before = context.failure_count();                                  \
-            ktest_instance_##fixture_class##_##name_token.run_set_up();                            \
+            instance.run_set_up();                                                                 \
             auto *const state = ::ktest::internal::current_state();                                \
             auto const setup_broke =                                                               \
                 state != nullptr &&                                                                \
                 (state->skipped || context.failure_count() != failures_before);                    \
             if (!setup_broke) {                                                                    \
-                ktest_instance_##fixture_class##_##name_token.ktest_body();                        \
+                instance.ktest_body();                                                             \
             }                                                                                      \
-            ktest_instance_##fixture_class##_##name_token.run_tear_down();                         \
+            instance.run_tear_down();                                                              \
         }                                                                                          \
+        static fixture_class##_##name_token##_Test instance;                                       \
         KTEST_RECORD_SECTION(".hsien.tests")                                                       \
-        FORCE_USED static ::hsien::TestRecord const ktest_record_##fixture_class##_##name_token =  \
-            {                                                                                      \
-                .name = #fixture_class "." #name_token,                                            \
-                .invoke = ktest_invoke_##fixture_class##_##name_token,                             \
-                .location = ::std::source_location::current(),                                     \
+        FORCE_USED static inline ::hsien::TestRecord const record = {                              \
+            .name = #fixture_class "." #name_token,                                                \
+            .invoke = &invoke,                                                                     \
+            .location = ::std::source_location::current(),                                         \
         };                                                                                         \
-    }                                                                                              \
+    };                                                                                             \
+    fixture_class##_##name_token##_Test fixture_class##_##name_token##_Test::instance{};           \
     void fixture_class##_##name_token##_Test::ktest_body()
 
 /// Defines the function that runs once before the run's first `KTEST_F` of
@@ -369,21 +366,22 @@ namespace internal {
 /// and its `KTEST_F`s on one suite.
 #define KTEST_SUITE_SETUP(fixture_class)                                                           \
     static_assert(sizeof(fixture_class) != 0, "KTEST_SUITE_SETUP names a fixture type");           \
-    static void ktest_suite_setup_body_##fixture_class();                                          \
-    namespace {                                                                                    \
-        void ktest_suite_setup_invoke_##fixture_class(::hsien::Context &context) {                 \
+    class fixture_class##_SuiteSetUp {                                                             \
+      public:                                                                                      \
+        static void body();                                                                        \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
             ::ktest::internal::BindScope const scope(context);                                     \
-            ktest_suite_setup_body_##fixture_class();                                              \
+            body();                                                                                \
         }                                                                                          \
         KTEST_RECORD_SECTION(".ktest.suite_hooks")                                                 \
-        FORCE_USED static ::ktest::internal::SuiteHook const ktest_suite_setup_##fixture_class = { \
+        FORCE_USED static inline ::ktest::internal::SuiteHook const hook = {                       \
             .name = #fixture_class ".SuiteSetUp",                                                  \
             .suite = #fixture_class,                                                               \
             .kind = ::ktest::internal::SuiteHookKind::SetUp,                                       \
-            .invoke = ktest_suite_setup_invoke_##fixture_class,                                    \
+            .invoke = &invoke,                                                                     \
         };                                                                                         \
-    }                                                                                              \
-    static void ktest_suite_setup_body_##fixture_class()
+    };                                                                                             \
+    void fixture_class##_SuiteSetUp::body()
 
 /// Defines the function that runs once after the run's last `KTEST_F` of
 /// |fixture_class|. Runs however the suite went: after a pass, after failed
@@ -391,21 +389,21 @@ namespace internal {
 /// to undo KTEST_SUITE_SETUP.
 #define KTEST_SUITE_TEARDOWN(fixture_class)                                                        \
     static_assert(sizeof(fixture_class) != 0, "KTEST_SUITE_TEARDOWN names a fixture type");        \
-    static void ktest_suite_teardown_body_##fixture_class();                                       \
-    namespace {                                                                                    \
-        void ktest_suite_teardown_invoke_##fixture_class(::hsien::Context &context) {              \
+    class fixture_class##_SuiteTearDown {                                                          \
+      public:                                                                                      \
+        static void body();                                                                        \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
             ::ktest::internal::BindScope const scope(context);                                     \
-            ktest_suite_teardown_body_##fixture_class();                                           \
+            body();                                                                                \
         }                                                                                          \
         KTEST_RECORD_SECTION(".ktest.suite_hooks")                                                 \
-        FORCE_USED static ::ktest::internal::SuiteHook const                                       \
-            ktest_suite_teardown_##fixture_class = {                                               \
-                .name = #fixture_class ".SuiteTearDown",                                           \
-                .suite = #fixture_class,                                                           \
-                .kind = ::ktest::internal::SuiteHookKind::TearDown,                                \
-                .invoke = ktest_suite_teardown_invoke_##fixture_class,                             \
+        FORCE_USED static inline ::ktest::internal::SuiteHook const hook = {                       \
+            .name = #fixture_class ".SuiteTearDown",                                               \
+            .suite = #fixture_class,                                                               \
+            .kind = ::ktest::internal::SuiteHookKind::TearDown,                                    \
+            .invoke = &invoke,                                                                     \
         };                                                                                         \
-    }                                                                                              \
-    static void ktest_suite_teardown_body_##fixture_class()
+    };                                                                                             \
+    void fixture_class##_SuiteTearDown::body()
 
 #endif // #ifndef KTEST_FIXTURE_HPP

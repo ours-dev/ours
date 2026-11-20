@@ -9,11 +9,11 @@
 // logging. The published state itself is the shared stage runner's.
 #include "host_shim.hpp"
 
+#include <ktest/run_stage.hpp>
+
 #include <string_view>
 
 #include <cstdlib>
-
-#include "../src/run_stage.hpp"
 
 // The assertion the gktl primitives carry (parse_u64's base check) ends in
 // ours::vpanic, which the kernel defines and the host suite stands in with

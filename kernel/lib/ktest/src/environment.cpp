@@ -7,8 +7,7 @@
 // into its own slot. The walk frames each stage itself, through the shared
 // stage runner, so no caller passes machinery in.
 #include <ktest/environment.hpp>
-
-#include "run_stage.hpp"
+#include <ktest/run_stage.hpp>
 
 namespace ktest {
 

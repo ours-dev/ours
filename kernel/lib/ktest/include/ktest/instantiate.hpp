@@ -135,41 +135,35 @@ namespace internal {
 /// records' `Suite.Name` prefix. Sharing the expansion is what makes the
 /// fixture combination one line rather than a second machinery.
 #define KTEST_P_INSTANTIATE(test_class, param_base, suite_token, name_token)                       \
-    namespace {                                                                                    \
-        alignas(test_class) static unsigned char ktest_param_storage_##suite_token##_##name_token  \
-            [sizeof(test_class)];                                                                  \
+    template <usize Index>                                                                         \
+    auto test_class::invoke(::hsien::Context &context) -> void {                                   \
+        ::ktest::internal::run_fixture<test_class>(                                                \
+            context, test_class::storage, [](test_class &test) { test.ktest_body(); },             \
+            param_base::VALUES[Index]);                                                            \
+    }                                                                                              \
+    struct test_class::Records {                                                                   \
+        static constexpr char PREFIX[] = #suite_token "." #name_token;                             \
         template <usize Index>                                                                     \
-        auto ktest_param_invoke_##suite_token##_##name_token(::hsien::Context &context) -> void {  \
-            ::ktest::internal::run_fixture<test_class>(                                            \
-                context, ktest_param_storage_##suite_token##_##name_token,                         \
-                [](test_class &test) { test.ktest_body(); }, param_base::VALUES[Index]);           \
-        }                                                                                          \
-        struct ktest_param_records_##suite_token##_##name_token {                                  \
-            static constexpr char PREFIX[] = #suite_token "." #name_token;                         \
-            template <usize Index>                                                                 \
-            struct Holder {                                                                        \
-                static constexpr ::ktest::internal::InstantiationName<sizeof(PREFIX) + 21> NAME{   \
-                    PREFIX, Index};                                                                \
-                static constexpr ::hsien::TestRecord RECORD{                                       \
-                    .name = NAME.value,                                                            \
-                    .invoke = &ktest_param_invoke_##suite_token##_##name_token<Index>,             \
-                    .location = ::std::source_location::current(),                                 \
-                };                                                                                 \
+        struct Holder {                                                                            \
+            static constexpr ::ktest::internal::InstantiationName<sizeof(PREFIX) + 21> NAME{       \
+                PREFIX, Index};                                                                    \
+            static constexpr ::hsien::TestRecord RECORD{                                           \
+                .name = NAME.value,                                                                \
+                .invoke = &test_class::invoke<Index>,                                              \
+                .location = ::std::source_location::current(),                                     \
             };                                                                                     \
-            template <usize... Indices>                                                            \
-            static consteval auto BLOCK(::std::integer_sequence<usize, Indices...>)                \
-                -> ::ktest::internal::RecordBlock<sizeof...(Indices)> {                            \
-                return {{Holder<Indices>::RECORD...}};                                             \
-            }                                                                                      \
         };                                                                                         \
-        /* Built here, outside the records struct, because a static member's   \
-         * initializer cannot instantiate its own class's member templates. */                   \
-        KTEST_RECORD_SECTION(".hsien.tests")                                                       \
-        FORCE_USED static ::ktest::internal::RecordBlock<param_base::COUNT> const                  \
-            ktest_param_block_##suite_token##_##name_token =                                       \
-                ktest_param_records_##suite_token##_##name_token::BLOCK(                           \
-                    ::std::make_integer_sequence<usize, param_base::COUNT>{});                     \
-    }
+        template <usize... Indices>                                                                \
+        static consteval auto BLOCK(::std::integer_sequence<usize, Indices...>)                    \
+            -> ::ktest::internal::RecordBlock<sizeof...(Indices)> {                                \
+            return {{Holder<Indices>::RECORD...}};                                                 \
+        }                                                                                          \
+    };                                                                                             \
+    alignas(test_class) unsigned char test_class::storage[sizeof(test_class)];                     \
+    KTEST_RECORD_SECTION(".hsien.tests")                                                           \
+    FORCE_USED inline ::ktest::internal::RecordBlock<param_base::COUNT> const                      \
+        test_class::records =                                                                      \
+            test_class::Records::BLOCK(::std::make_integer_sequence<usize, param_base::COUNT>{});
 
 /// Defines one instantiation family of a value-parameterized suite: one record
 /// per entry of the suite's `KTEST_VALUE_PARAM` table, named `Suite.Name/0`
@@ -184,6 +178,11 @@ namespace internal {
       public:                                                                                      \
         using suite##_ParamBase::suite##_ParamBase;                                                \
         void ktest_body();                                                                         \
+        template <usize Index>                                                                     \
+        static auto invoke(::hsien::Context &context) -> void;                                     \
+        struct Records;                                                                            \
+        static unsigned char storage[];                                                            \
+        static ::ktest::internal::RecordBlock<suite##_ParamBase::COUNT> const records;             \
     };                                                                                             \
     KTEST_P_INSTANTIATE(suite##_##name##_Test, suite##_ParamBase, suite, name)                     \
     void suite##_##name##_Test::ktest_body()
@@ -198,6 +197,11 @@ namespace internal {
       public:                                                                                      \
         using fixture_class##_ParamBase::fixture_class##_ParamBase;                                \
         void ktest_body();                                                                         \
+        template <usize Index>                                                                     \
+        static auto invoke(::hsien::Context &context) -> void;                                     \
+        struct Records;                                                                            \
+        static unsigned char storage[];                                                            \
+        static ::ktest::internal::RecordBlock<fixture_class##_ParamBase::COUNT> const records;     \
     };                                                                                             \
     KTEST_P_INSTANTIATE(fixture_class##_##name##_Test, fixture_class##_ParamBase, fixture_class,   \
                         name)                                                                      \
@@ -220,43 +224,44 @@ namespace internal {
 /// the record's own type as `T`; each record's invoke runs the body with the
 /// type its position in the list pairs it with.
 #define KTEST_T(suite_token, name_token)                                                           \
-    template <typename T>                                                                          \
-    static void ktest_typed_body_##suite_token##_##name_token();                                   \
-    namespace {                                                                                    \
+    class suite_token##_##name_token##_Test {                                                      \
+      public:                                                                                      \
         template <typename T>                                                                      \
-        auto ktest_typed_invoke_##suite_token##_##name_token(::hsien::Context &context) -> void {  \
+        static void body();                                                                        \
+        template <typename T>                                                                      \
+        static auto invoke(::hsien::Context &context) -> void {                                    \
             ::ktest::internal::BindScope const scope(context);                                     \
-            ktest_typed_body_##suite_token##_##name_token<T>();                                    \
+            body<T>();                                                                             \
         }                                                                                          \
-        struct ktest_typed_records_##suite_token##_##name_token {                                  \
-            static constexpr char PREFIX[] = #suite_token "." #name_token;                         \
-            template <usize Index, typename T>                                                     \
-            struct Holder {                                                                        \
-                static constexpr ::ktest::internal::InstantiationName<sizeof(PREFIX) + 21> NAME{   \
-                    PREFIX, Index};                                                                \
-                static constexpr ::hsien::TestRecord RECORD{                                       \
-                    .name = NAME.value,                                                            \
-                    .invoke = &ktest_typed_invoke_##suite_token##_##name_token<T>,                 \
-                    .location = ::std::source_location::current(),                                 \
-                };                                                                                 \
+        struct Records;                                                                            \
+        static ::ktest::internal::RecordBlock<suite_token##_TypeList::COUNT> const records;        \
+    };                                                                                             \
+    struct suite_token##_##name_token##_Test::Records {                                            \
+        static constexpr char PREFIX[] = #suite_token "." #name_token;                             \
+        template <usize Index, typename T>                                                         \
+        struct Holder {                                                                            \
+            static constexpr ::ktest::internal::InstantiationName<sizeof(PREFIX) + 21> NAME{       \
+                PREFIX, Index};                                                                    \
+            static constexpr ::hsien::TestRecord RECORD{                                           \
+                .name = NAME.value,                                                                \
+                .invoke = &suite_token##_##name_token##_Test::invoke<T>,                           \
+                .location = ::std::source_location::current(),                                     \
             };                                                                                     \
-            template <typename... Types, usize... Indices>                                         \
-            static consteval auto BLOCK(::ktest::internal::TypeList<Types...>,                     \
-                                        ::std::integer_sequence<usize, Indices...>)                \
-                -> ::ktest::internal::RecordBlock<sizeof...(Indices)> {                            \
-                return {{Holder<Indices, Types>::RECORD...}};                                      \
-            }                                                                                      \
         };                                                                                         \
-        /* Built here, outside the records struct, because a static member's   \
-         * initializer cannot instantiate its own class's member templates. */                   \
-        KTEST_RECORD_SECTION(".hsien.tests")                                                       \
-        FORCE_USED static ::ktest::internal::RecordBlock<suite_token##_TypeList::COUNT> const      \
-            ktest_typed_block_##suite_token##_##name_token =                                       \
-                ktest_typed_records_##suite_token##_##name_token::BLOCK(                           \
-                    suite_token##_TypeList{},                                                      \
-                    ::std::make_integer_sequence<usize, suite_token##_TypeList::COUNT>{});         \
-    }                                                                                              \
+        template <typename... Types, usize... Indices>                                             \
+        static consteval auto BLOCK(::ktest::internal::TypeList<Types...>,                         \
+                                    ::std::integer_sequence<usize, Indices...>)                    \
+            -> ::ktest::internal::RecordBlock<sizeof...(Indices)> {                                \
+            return {{Holder<Indices, Types>::RECORD...}};                                          \
+        }                                                                                          \
+    };                                                                                             \
+    KTEST_RECORD_SECTION(".hsien.tests")                                                           \
+    FORCE_USED inline ::ktest::internal::RecordBlock<suite_token##_TypeList::COUNT> const          \
+        suite_token##_##name_token##_Test::records =                                               \
+            suite_token##_##name_token##_Test::Records::BLOCK(                                     \
+                suite_token##_TypeList{},                                                          \
+                ::std::make_integer_sequence<usize, suite_token##_TypeList::COUNT>{});             \
     template <typename T>                                                                          \
-    static void ktest_typed_body_##suite_token##_##name_token()
+    void suite_token##_##name_token##_Test::body()
 
 #endif // #ifndef KTEST_INSTANTIATE_HPP
