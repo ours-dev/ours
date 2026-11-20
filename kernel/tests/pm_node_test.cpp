@@ -1578,12 +1578,10 @@ namespace {
         auto const low = zone.watermark(PmZone::Watermark::Low);
         auto const high = zone.watermark(PmZone::Watermark::High);
 
-        // Paused, so that nothing else marks this node or takes its record
-        // while the test reads it: while a Pause lives the reclaimer drops
-        // every report and its thread takes no node's record. What an earlier
-        // report left is taken first, so that the first mark below is the
-        // first. A report that passed its check just before the Pause began
-        // could still mark the node; nothing allocates on this node now.
+        // Paused, so that the reclaimer's thread takes no node's record while
+        // the test reads it. What an earlier shortage left is taken first, so
+        // that the first mark below is the first; nothing allocates on this
+        // node meanwhile, so nothing else marks it.
         ZoneTrial trial{zone};
         auto _ = target->take_reclaim_target();
 
@@ -1605,6 +1603,40 @@ namespace {
         EXPECT_TRUE(at_low && again, "after a take the next mark is the first again");
         EXPECT_TRUE(wanted == high - low, "a marked zone at Low asks for the distance to High");
         EXPECT_TRUE(taken == 0, "the take clears the record");
+    }
+
+    KTEST(PmNode, AShortageFoundWhilePausedIsKept) {
+        // A zone an allocation finds short is recorded on its node by the
+        // allocation itself, whether or not the reclaimer is paused; the
+        // record waits for the last Pause to end, when the reclaimer's thread
+        // takes it.
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        ZoneTrial trial{zone};
+        auto _ = target->take_reclaim_target();
+
+        // At Low the first pass finds the zone short and the second serves the
+        // request: the allocation records the shortage on its way out.
+        auto const at_low = trial.drain_to(low);
+        auto const served = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
+        trial.keep(served);
+
+        // A mark already there answers that it is not the first.
+        auto const kept = !target->mark_short(zone);
+        auto _ = target->take_reclaim_target();
+
+        EXPECT_TRUE(at_low && served && kept,
+                    "a shortage found while the reclaimer is paused is kept on its node");
     }
 
     KTEST(PmNode, LowZonesKeepAReserve) {

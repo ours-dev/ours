@@ -293,3 +293,57 @@ None.
 - What do the flat `node_*` queries answer that the members cannot?
 - Why does a test that compares a forwarder with what it forwards to check nothing?
 - Which decision does the home of the machine-wide sums wait for?
+
+## The PMM wakes the reclaimer through an event it registers, as it wakes the watchdog (2026-11-18)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `set_reclaim_signal(sync::Event *)`; `observe_pressure()` marks the short zone's node itself and signals the registered event on the node's first mark; `pmm.cpp` no longer includes `memory_reclaimer.hpp`
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp` — `request(PmZone const &)` and the write-only `m_started` are gone; `start()` registers `m_signal` and signals it once; the Pause's comment says what it now does with a mark
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `mark_short()`'s comment names its caller
+- `kernel/tests/pm_node_test.cpp` — `AShortageFoundWhilePausedIsKept`; `AShortZoneIsMarkedOnceAndTakenOnce`'s comment
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — the reclaimer's wake as built, and review M1's Pause contract as revised
+
+**Symptom**
+Review minor item 29, which the user first chose to keep (see the record before) and reopened the same day: the PMM called up to the reclaimer's singleton (`MemoryReclaimer::get().request(zone)`) while the watchdog, the other service above it, was handed down as an event (`set_free_memory_signal()`). The two dependencies pointed opposite ways.
+
+**Cause**
+A layer that calls up to a service has to know that service; one that signals an event it was given knows only the event. The watchdog was already built the second way. The cost the user accepted: `request(zone)` dropped a report while the reclaimer had not started or a Pause lived, before it marked; with the mark made under the PMM, a mark is made whatever the reclaimer's state, so two things had to change for no wake to be lost. A mark made before the reclaimer registers finds no event: `start()` signals once after it registers, so the thread takes every record made before. A mark made while a Pause lives is no longer dropped: its first mark's wake finds the thread refused (`take_node_target()` under the Pause), and the last Pause to end wakes it again to take the record. So a record that is not empty always has a wake on its way, or one bound to come with the start or the end of the last Pause.
+
+**Change**
+
+```cpp
+// pmm.cpp
+std::atomic<sync::Event *> RECLAIM_SIGNAL{nullptr};
+auto observe_pressure(ustl::Option<PmZone const &> depleted_zone) -> void {
+    GATE.check_signal();
+    if (!depleted_zone) { return; }
+    if (find_node(depleted_zone->which_node())->mark_short(*depleted_zone)) {
+        if (auto *const event = RECLAIM_SIGNAL.load(std::memory_order_acquire)) { event->signal(); }
+    }
+}
+// memory_reclaimer.cpp, start()
+set_reclaim_signal(&m_signal);
+m_signal.signal();    // the marks made before anyone was registered
+```
+
+Review M1's contract changes from "a report made while a Pause lives is dropped" to "a mark made while a Pause lives is kept, and taken when the last Pause ends"; the thread still takes no record while a Pause lives.
+
+**Reference**
+None: this kernel's own reclaimer. The shape is the watchdog's (`set_free_memory_signal()`); Zircon's `PmmNode` signals the memory-pressure event it was handed in the same way (`signal_free_memory_change_locked()`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 101 ran, 84 passed, 17 skipped; four nodes 101 ran, 97 passed, 4 skipped, the new test among the passes; failure-injection build 101 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. Control: with the mark in `observe_pressure()` turned off, `AShortageFoundWhilePausedIsKept` fails. A narrow pre-commit review (two reviewers; three of its verifiers lost their connections and those findings were checked by hand) found the comments of `mark_short()` and `observe_pressure()` and one as-built sentence of DESIGN.md still describing `request(zone)`, and a forward declaration of `PmZone` left in `memory_reclaimer.hpp` (all corrected), and no lost wake in any interleaving of a first mark, `start()`, a Pause and the thread's take. Refuted: that the new test's comment claims more than it checks.
+
+**Deliberately not done**
+Option B (an event per node): one event serves every node, since the thread takes each node's record in turn.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 29, reopened and decided by the user on 2026-11-18 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which marks could have no wake on their way, and what sends one for each?
+- What did a Pause do with a report before, and what does it do with a mark now?
+- Why does the PMM no longer need to know the reclaimer?

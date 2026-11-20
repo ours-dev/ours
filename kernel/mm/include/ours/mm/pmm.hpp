@@ -341,6 +341,14 @@ enum class DelayedAllocations : u8 {
 auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event,
                             DelayedAllocations delayed) -> bool;
 
+/// For the reclaimer. Signals |event| when an allocation finds a zone short
+/// and that zone's node had nothing recorded since the reclaimer last took its
+/// record (PmNode::mark_short()): one wake for each record waiting to be
+/// taken. A null |event| asks for none. The shortage is recorded on its node
+/// either way, so whoever sets the event has to take what was recorded before
+/// it did; the reclaimer wakes itself once when it starts.
+auto set_reclaim_signal(sync::Event *event) -> void;
+
 /// Holds |frame| in place: until the matching unpin_frame() it keeps its
 /// physical address and its content, so nothing may reclaim it, replace it or
 /// move it. Pins count, and a frame is held while it has any.
