@@ -180,3 +180,55 @@ None
 - Why did a host tool link on the user's Mac but not on a macOS 15 runner, though both used the same pinned compiler?
 - Why is the prebuilt cache saved immediately after the fetch instead of at the end of the job?
 - Why can the first push of a branch fail a document check that every later push would pass?
+
+## A version tag publishes a bootable GitHub Release (2026-11-21)
+
+**Files**
+- `.github/workflows/release.yaml` — new: on a `v*` tag, calls `ci.yaml` in release mode, then publishes the files `SHA256SUMS` lists as a GitHub Release.
+- `.github/workflows/ci.yaml` — callable (`workflow_call`, input `mode`); the `ci` step runs `ci.py release` in that mode.
+- `scripts/ci.py` — new `release` subcommand (verify and artifacts, no check); `SHA256SUMS` covers only the top-level files; the boot shim is collected as `bootshim`.
+- `scripts/qemu_boot.py` — the shim's path is the constant `SHIM`, and the `SHIM` environment variable overrides it.
+- `scripts/test_ci.py` — the shim and the narrower `SHA256SUMS` in the artifacts test.
+
+**Symptom**
+The first probe release (`v0.0.0-ci-test`) published both images and their checksums, all correct, and none of it booted: `qemu_boot.py` stopped with `missing shim: .../kernel.phys_x86.phys.dbg_0/obj/kernel/arch/x86/phys/bootshim/bootshim`.
+
+**Cause**
+An `.obi` is not the whole boot. The chain is GRUB, then the phys boot shim (the Multiboot2 kernel GRUB loads), then the image as a module; `qemu_boot.py` builds that ESP from the image and from a shim it found only at a fixed path inside a build directory. Nothing in GN's image metadata names the shim (each `.debug.json` lists `physload`, not `bootshim`), so a collector driven by that metadata left out the one file every boot needs. A release is the first consumer that has no build directory at all, which is why it surfaced only there.
+
+**Change**
+The shim's path became one named constant in `qemu_boot.py`, imported by `ci.py`, so the two cannot drift; `ci.py artifacts` copies it to the top level as `bootshim`, and `qemu_boot.py` takes `SHIM=<file>` for a shim outside a build directory. Booting a release:
+
+```bash
+gh release download v0.0.0-ci-test.2 -R ours-dev/ours -D rel && cd rel && shasum -a 256 -c SHA256SUMS && cd ..
+SHIM=$PWD/rel/bootshim IMAGE=$PWD/rel/kernel.dev.obi python3 scripts/qemu_boot.py
+```
+
+`SHA256SUMS` now covers exactly the top-level files, and the publish job uploads exactly the files it names, so the release cannot carry a file its checksums do not vouch for. The release job builds through `ci.yaml` itself (`uses: ./.github/workflows/ci.yaml` with `mode: release`), so a release is built, booted and tested exactly as every push is, and only the publish job has `contents: write`. A tag has no "before" commit to diff against, so release mode skips `check`: the tagged commit was checked when it was pushed.
+
+Rejected: publishing a prebuilt ESP image instead of the shim (it would also have to carry GRUB, and `qemu_boot.py` already knows how to build one); a GN metadata entry for the shim (worth having, but the shim belongs to the boot path rather than to any one image, and one constant shared by the only two readers is enough for now).
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `python3 -m unittest scripts/test_ci.py`: passed.
+- `v0.0.0-ci-test` (run 44758263908): green; build and boot 17 min 30 s, publish 16 s; 5 assets, checksums OK, not bootable (the symptom above).
+- `v0.0.0-ci-test.2` (run 44761653590): green; build and boot 16 min 28 s, publish 7 s; 6 assets (`bootshim`, both `.obi`, both `.debug.json`, `SHA256SUMS`), `shasum -a 256 -c SHA256SUMS` OK for all five; booted from the downloaded files alone with `SHIM` set: dbg PASS (46 passed, 5 skipped), rel PASS (44 passed, 8 skipped, 7/7 required).
+- Both probe tags were made on commits that add only this step's changes to the published baseline, so they published nothing else.
+
+**Deliberately not done**
+- The unstripped ELFs are not in a release; the `.debug.json` lists name them, and a failed CI run uploads them.
+- No nightly release (D4).
+- The release run is slow (about 17 minutes) because a tag starts from a cold ccache for its ref and falls back to the baseline's; not tuned.
+
+**How it was found**
+Downloading the first probe release with `gh release download` and booting it with `boot_check.py --no-build --no-tests` against the download directory.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why did a release whose every checksum was correct still fail to boot, and why did no CI run before it notice?
+- Why does the release job call `ci.yaml` instead of carrying its own build steps?
+- Why does release mode skip `check`, and what makes that safe?
