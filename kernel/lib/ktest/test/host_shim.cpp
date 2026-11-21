@@ -24,18 +24,14 @@ auto vpanic(std::string_view) -> void {
 }
 } // namespace ours
 
-namespace {
-
-auto note_failure(hsien::Failure const &failure) -> void {
+auto NoteFailures::report(hsien::Failure const &failure) -> void {
     FAILURES.push_back(std::string{failure.test_name} + ": " + failure.message);
 }
-
-} // namespace
 
 std::vector<std::string> FAILURES;
 usize FRAMEWORK_ERRORS = 0;
 std::vector<std::string> LOG;
-hsien::Reporter REPORTER{&note_failure};
+NoteFailures REPORTER;
 
 namespace ktest::internal {
 
@@ -96,7 +92,7 @@ auto record_skip(char const *reason) -> void {
 auto run_record(hsien::TestRecord const &record) -> RunOutcome {
     ktest::internal::RunState state;
     ktest::internal::CURRENT_STATE.store(&state, std::memory_order_relaxed);
-    hsien::run(&record, &record + 1, REPORTER);
+    static_cast<void>(record.run(REPORTER));
     ktest::internal::CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
     auto outcome = RunOutcome{};
     outcome.failures = state.checks;

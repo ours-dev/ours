@@ -48,9 +48,8 @@ class Run {
     /// True when some name is registered twice. The run stops before it
     /// would otherwise pick one of the two.
     [[nodiscard]]
-    auto names_repeat(hsien::TestRecord const *const begin, hsien::TestRecord const *const end)
-        -> bool {
-        return reject_duplicates(begin, end);
+    auto names_repeat(hsien::TestRegistry const tests) -> bool {
+        return reject_duplicates(tests);
     }
 
     /// One run at a time. False when a run is already entered.
@@ -60,51 +59,47 @@ class Run {
             return false;
         }
         m_running = true;
-        current() = this;
         return true;
     }
 
     auto leave() -> void {
         m_running = false;
-        if (current() == this) {
-            current() = nullptr;
-        }
     }
 
     [[nodiscard]]
-    auto list(hsien::TestRecord const *const begin, hsien::TestRecord const *const end,
-              hsien::TestRecord const *const death_begin, hsien::TestRecord const *const death_end)
-        -> int {
-        if (begin == end) {
+    auto list(hsien::TestRegistry const tests, hsien::TestRegistry const deaths) -> int {
+        if (tests.empty()) {
             m_services.error("ktest: ERROR no tests are linked into this kernel");
             return 1;
         }
-        if (reject_duplicates(begin, end) || reject_duplicates(death_begin, death_end)) {
+        if (reject_duplicates(tests) || reject_duplicates(deaths)) {
             return 1;
         }
-        for (auto const *record = begin; record != end; ++record) {
-            m_services.info("ktest: TEST {}", record->name);
+        for (auto const &record: tests.records()) {
+            m_services.info("ktest: TEST {}", record.name);
         }
-        for (auto const *record = death_begin; record != death_end; ++record) {
-            m_services.info("ktest: DEATH {}", record->name);
+        for (auto const &record: deaths.records()) {
+            m_services.info("ktest: DEATH {}", record.name);
         }
         return 0;
     }
 
     /// The live selection. |m_plan| is the plan adopt() installed.
     [[nodiscard]]
-    auto execute(hsien::TestRecord const *const begin, hsien::TestRecord const *const end,
-                 internal::SuiteHook const *const hooks_begin,
+    auto execute(hsien::TestRegistry const tests, internal::SuiteHook const *const hooks_begin,
                  internal::SuiteHook const *const hooks_end, std::string_view const filter) -> int {
-        if (reject_duplicates(begin, end)) {
+        if (reject_duplicates(tests)) {
             return 1;
         }
+        auto const records = tests.records();
+        auto const *const begin = records.data();
+        auto const *const end = begin + records.size();
         m_summary = Summary{};
         for (auto i = usize{0}; i < m_plan.option_count; ++i) {
             m_services.info("ktest: OPTION {}={}", m_plan.options[i].name, m_plan.options[i].value);
         }
 
-        auto const count = static_cast<usize>(end - begin);
+        auto const count = records.size();
         if (m_plan.shuffle) {
             if (count > MAX_SHUFFLE_TESTS) {
                 m_services.error("ktest: ERROR {} tests are linked; shuffle plans at most {}",
@@ -115,7 +110,7 @@ class Run {
             log_shuffle(count);
         }
 
-        auto reporter = hsien::Reporter{&report_failure};
+        auto &reporter = m_reporter;
         auto &registry = internal::environments();
         if (registry.dropped != 0) {
             m_services.error(
@@ -150,7 +145,7 @@ class Run {
                 if (m_plan.shuffle) {
                     index = m_order[pos];
                 }
-                auto const &record = begin[index];
+                auto const &record = records[index];
                 if (!matches_filter(record.name, filter) ||
                     !in_shard(index, m_plan.shard.m, m_plan.shard.n)) {
                     continue;
@@ -200,27 +195,25 @@ class Run {
     /// Death tests. A body that returns is the failure; the first panic ends
     /// the machine, so a second match is the host's next boot.
     [[nodiscard]]
-    auto execute_death(hsien::TestRecord const *const begin, hsien::TestRecord const *const end,
-                       std::string_view const filter) -> int {
-        if (begin == end) {
+    auto execute_death(hsien::TestRegistry const deaths, std::string_view const filter) -> int {
+        if (deaths.empty()) {
             m_services.error("ktest: ERROR no death tests are linked into this kernel");
             return 1;
         }
-        if (reject_duplicates(begin, end)) {
+        if (reject_duplicates(deaths)) {
             return 1;
         }
         m_summary = Summary{};
-        auto reporter = hsien::Reporter{&report_failure};
-        for (auto const *record = begin; record != end; ++record) {
-            if (!matches_filter(record->name, filter)) {
+        for (auto const &record: deaths.records()) {
+            if (!matches_filter(record.name, filter)) {
                 continue;
             }
-            m_services.info("ktest: DEATH {}", record->name);
+            m_services.info("ktest: DEATH {}", record.name);
             publish();
-            hsien::run(record, record + 1, reporter);
+            static_cast<void>(record.run(m_reporter));
             unpublish();
             m_services.error("ktest: FAILED {} (a death test must panic; it returned)",
-                             record->name);
+                             record.name);
             m_summary.record(true, false);
         }
         if (m_summary.ran == 0) {
@@ -233,28 +226,31 @@ class Run {
     }
 
   private:
-    static auto current() -> Run *& {
-        static Run *SLOT = nullptr;
-        return SLOT;
-    }
+    /// Prints every failed check as the console's `FAIL` line. The run owns
+    /// one and hands it to every test, hook and stage; holding the services
+    /// is what lets a failure reach the run's logger without a global slot
+    /// pointing back at the run.
+    class FailureLines final: public hsien::Reporter {
+      public:
+        explicit FailureLines(Services const &services) : m_services(&services) {}
 
-    static auto report_failure(hsien::Failure const &failure) -> void {
-        auto *const run = current();
-        if (run == nullptr) {
-            return;
-        }
-        run->m_services.error("ktest: FAIL {} {}:{}: {}", failure.test_name,
+        auto report(hsien::Failure const &failure) -> void override {
+            m_services->error("ktest: FAIL {} {}:{}: {}", failure.test_name,
                               std::string_view{failure.location.file_name()},
                               failure.location.line(), std::string_view{failure.message});
-    }
+        }
 
-    auto reject_duplicates(hsien::TestRecord const *const begin, hsien::TestRecord const *const end)
-        -> bool {
-        for (auto const *record = begin; record != end; ++record) {
-            for (auto const *other = record + 1; other != end; ++other) {
-                if (std::string_view{record->name} == std::string_view{other->name}) {
+      private:
+        Services const *m_services;
+    };
+
+    auto reject_duplicates(hsien::TestRegistry const tests) -> bool {
+        auto const records = tests.records();
+        for (auto i = usize{0}; i < records.size(); ++i) {
+            for (auto j = i + 1; j < records.size(); ++j) {
+                if (std::string_view{records[i].name} == std::string_view{records[j].name}) {
                     m_services.error("ktest: ERROR the test name \"{}\" is registered twice",
-                                     record->name);
+                                     records[i].name);
                     return true;
                 }
             }
@@ -284,7 +280,7 @@ class Run {
 
         publish();
         auto const started = m_services.now();
-        auto const recorded = hsien::run(&record, &record + 1, reporter);
+        auto const failures = record.run(reporter);
         auto const elapsed_us = m_services.microseconds_since(started);
         auto const checks = m_state.checks;
         auto const skipped = m_state.skipped;
@@ -294,10 +290,10 @@ class Run {
         }
         unpublish();
 
-        auto const failed = recorded.failed != 0;
+        auto const failed = failures != 0;
         if (failed) {
-            m_services.error("ktest: FAILED {} ({} of {} checks failed)", record.name,
-                             recorded.failed, checks);
+            m_services.error("ktest: FAILED {} ({} of {} checks failed)", record.name, failures,
+                             checks);
         } else if (skipped) {
             m_services.info("ktest: SKIP {}: {}", record.name, reason);
         } else {
@@ -351,6 +347,7 @@ class Run {
     }
 
     Services m_services;
+    FailureLines m_reporter{m_services};
     RunPlan m_plan{};
     Summary m_summary{};
     internal::RunState m_state{};

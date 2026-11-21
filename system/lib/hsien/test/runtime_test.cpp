@@ -7,9 +7,12 @@ namespace {
 bool SECOND_RAN = false;
 std::size_t REPORT_COUNT = 0;
 
-auto report(hsien::Failure const &) -> void {
-    ++REPORT_COUNT;
-}
+class CountingReporter final: public hsien::Reporter {
+  public:
+    auto report(hsien::Failure const &) -> void override {
+        ++REPORT_COUNT;
+    }
+};
 
 auto first_test(hsien::Context &context) -> void {
     context.check(false, std::source_location::current(), "expected failure");
@@ -31,8 +34,8 @@ auto main() -> int {
         {"first_test", &first_test, std::source_location::current()},
         {"second_test", &second_test, std::source_location::current()},
     };
-    hsien::Reporter reporter{&report};
-    auto const summary = hsien::run(records, records + 2, reporter);
+    CountingReporter reporter;
+    auto const summary = hsien::TestRegistry{records, records + 2}.run(reporter);
 
     return expect(summary.executed == 2) && expect(summary.failed == 1) &&
                    expect(REPORT_COUNT == 1) && expect(SECOND_RAN)

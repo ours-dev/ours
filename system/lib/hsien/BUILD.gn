@@ -8,7 +8,6 @@ declare_args() {
 cpp_interface("headers") {
   public = [
     "include/hsien/runner.hpp",
-    "include/hsien/section.hpp",
     "include/hsien/test.hpp",
   ]
   public_deps = [ "//system/public" ]

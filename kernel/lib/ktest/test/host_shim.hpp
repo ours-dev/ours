@@ -30,8 +30,15 @@ extern usize FRAMEWORK_ERRORS;
 /// suite appends here, so a case can assert the exact sequence.
 extern std::vector<std::string> LOG;
 
+/// Captures every failed check into FAILURES, as the booted runner would
+/// print it.
+class NoteFailures final: public hsien::Reporter {
+  public:
+    auto report(hsien::Failure const &failure) -> void override;
+};
+
 /// The reporter every run_record hands to the runtime.
-extern hsien::Reporter REPORTER;
+extern NoteFailures REPORTER;
 
 /// What one record's run produced: the failures its assertions recorded
 /// and whether it asked to be skipped — the inputs the booted runner

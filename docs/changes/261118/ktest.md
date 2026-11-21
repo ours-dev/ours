@@ -80,3 +80,47 @@ None.
 - Why does a bare `ktest` need the subtraction to be conditional?
 - Why does `ktest sel=death filter=X` carry exactly one word besides the selection, and what does a second one mean?
 - What would an object that owns the parsed command line answer instead of a raw word count?
+
+## hsien's Reporter becomes an abstract base class and a TestRegistry replaces run and the section functions (2026-11-21)
+
+**Files**
+- `system/lib/hsien/include/hsien/test.hpp` — `Reporter` is an abstract class with a pure virtual `report()`, its destructor protected and not virtual, copy and move deleted; `ReportFn` is gone; `TestRecord` gains `run(Reporter &)`, answering its failed-check count
+- `system/lib/hsien/include/hsien/runner.hpp`, `src/runner.cpp` — `TestRegistry` holds the bounds of a run of records and offers `records()`, `empty()` and `run(Reporter &)`; the free function `run(begin, end, reporter)` is gone; `Context::check` drops its null checks, since a Context is always built from a reference
+- `system/lib/hsien/src/section.cpp` — defines `TestRegistry::linked()`; `include/hsien/section.hpp` (`section_begin`, `section_end`, `run_section`) is deleted and dropped from `BUILD.gn`
+- `system/lib/hsien/test/runtime_test.cpp`, `parameterized_runtime_test.cpp` — each declares a small Reporter subclass and runs through `TestRegistry`
+- `kernel/lib/ktest/include/ktest/session.hpp` — `Run` owns a `FailureLines` reporter that holds its services; the static `current()` slot and `report_failure` are gone; `list`, `execute`, `execute_death` and `names_repeat` take registries
+- `kernel/lib/ktest/src/runner.cpp` — asks `TestRegistry::linked()` for the live section and builds the death registry from its own section bounds; the death filter is set without a ternary
+- `kernel/lib/ktest/test/host_shim.cpp`, `host_shim.hpp` — `REPORTER` is a `NoteFailures` subclass
+
+**Symptom**
+None, a design request: the user (2026-11-18) asked for ktest and hsien in object-oriented form, and chose an abstract base class for the reporter over a template parameter or a wrapped function pointer.
+
+**Cause**
+`Reporter` was a struct holding one function pointer: a virtual table written by hand. A function pointer carries no state, so `Run` kept a static `current()` slot just so its `report_failure` could find which run's logger to print through. The record loop was a free function over two raw pointers, and the linked section was reached through three more free functions, so "these records, and how to run them" had no owner.
+
+**Change**
+The reporter is now an object: the kernel's `FailureLines` holds a pointer to the run's services, so a failure reaches the right logger without any global. The cost is one indirect call per failed check, on a path that only runs when a test fails. The destructor is protected and non-virtual because nothing deletes a reporter through the base: they live in static storage or on the running frame. That makes a delete through `Reporter *` a compile error instead of a virtual destructor nothing calls. This differs from the fixtures, which dropped their virtuals on 2026-11-13: a fixture's stages run on every test, while the reporter is called only on a failure and is genuinely chosen per program (the kernel's console lines, the host suite's capture).
+
+`TestRecord` stays an aggregate with public fields. The test macros place records in a linker section with designated initializers, and a record never changes after the build, so it is a value, not an object guarding an invariant. It gained the verb `run()` that the runner and the host shim used to spell as a one-record range.
+
+**Reference**
+GoogleTest's `TestEventListener` (`vendor/googletest/googletest/include/gtest/gtest.h`) is the same choice: failures go to an object with virtual hooks that the runner owns, not to a callback. `std::span` is the model for a registry that owns bounds and no storage.
+
+**Verification**
+`boot_check.py --out out/ktest-oop`: build ok, dbg PASS 46/5/0, rel PASS 44/8/0 (7/7 required), host-tests 185/0. On dbg: `ktest sel=list` lists 101 tests, `ktest all` gives `ran=101 passed=84 failed=0 skipped=17`, `ktest sel=all shuffle repeat=2 shard=0/2` gives `failed=0`, `ktest sel=Ktest*` gives `ran=21 failed=0`, and `ktest sel=death` passes on a fresh boot. hsien's two runtime tests are not in any GN target; both were compiled by hand with the prebuilt clang++ against `src/runner.cpp` and exited 0. The kernel's `FailureLines::report` was not exercised: no test in the tree fails. The host suite's `NoteFailures` covers the same Context-to-reporter path.
+
+**Deliberately not done**
+- `Environment` moving into hsien (the user's decision, 2026-11-18) is the next step, not this one.
+- hsien's runtime tests are still not built by GN.
+- `gn format` would rewrite the unrelated label `//system/lib/hsien:hsien` in `system/lib/hsien/BUILD.gn` to `//system/lib/hsien`; left as it is.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why could the function-pointer Reporter not reach the right run's logger without a global slot, and why can the class version?
+- Why is `Reporter`'s destructor protected and non-virtual, and what would a virtual one buy here?
+- Why is `TestRecord` left an aggregate with public fields while `Reporter` and `TestRegistry` are classes?

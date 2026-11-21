@@ -4,7 +4,10 @@ namespace {
 
 int OBSERVED_SUM = 0;
 
-auto report(hsien::Failure const &) -> void {}
+class SilentReporter final: public hsien::Reporter {
+  public:
+    auto report(hsien::Failure const &) -> void override {}
+};
 
 auto parameterized_test(hsien::Context &, int value) -> void {
     OBSERVED_SUM += value;
@@ -30,7 +33,7 @@ auto main() -> int {
         {"parameterized_test/1", &invoke_one, std::source_location::current()},
         {"parameterized_test/2", &invoke_two, std::source_location::current()},
     };
-    hsien::Reporter reporter{&report};
-    auto const summary = hsien::run(records, records + 3, reporter);
+    SilentReporter reporter;
+    auto const summary = hsien::TestRegistry{records, records + 3}.run(reporter);
     return summary.executed == 3 && summary.failed == 0 && OBSERVED_SUM == 6 ? 0 : 1;
 }

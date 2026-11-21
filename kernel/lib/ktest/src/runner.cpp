@@ -22,7 +22,7 @@
 #include <utility>
 
 #include <gktl/command.hpp>
-#include <hsien/section.hpp>
+#include <hsien/runner.hpp>
 #include <logz4/log.hpp>
 #include <ours/status.hpp>
 #include <ours/task/thread.hpp>
@@ -76,6 +76,13 @@ extern "C" ::hsien::TestRecord ktest_death_start[] asm("__ktest_death_start");
 extern "C" ::hsien::TestRecord ktest_death_end[] asm("__ktest_death_end");
 
 namespace {
+
+    /// The death-test section as a registry, bounded the same way the live
+    /// one is.
+    [[nodiscard]]
+    auto death_tests() -> hsien::TestRegistry {
+        return hsien::TestRegistry{ktest_death_start, ktest_death_end};
+    }
 
     /// The thread the published test or stage runs on, for the wrong-thread
     /// guard. The stage runner publishes it around each hook and test through
@@ -214,8 +221,7 @@ namespace {
                 log::error("ktest: ERROR ktest sel=list takes no options");
                 return 1;
             }
-            return ACTIVE.list(hsien::section_begin(), hsien::section_end(), ktest_death_start,
-                               ktest_death_end);
+            return ACTIVE.list(hsien::TestRegistry::linked(), death_tests());
         }
 
         // The death selection is its own command shape: one boot per test,
@@ -228,23 +234,23 @@ namespace {
                 log::error("ktest: ERROR usage: ktest sel=death [filter=<glob>]");
                 return 1;
             }
-            auto const *const begin = hsien::section_begin();
-            auto const *const end = hsien::section_end();
-            if (begin == end) {
+            auto const tests = hsien::TestRegistry::linked();
+            if (tests.empty()) {
                 log::error("ktest: ERROR no tests are linked into this kernel");
                 return 1;
             }
-            if (ACTIVE.names_repeat(begin, end)) {
+            if (ACTIVE.names_repeat(tests)) {
                 return 1;
             }
-            return ACTIVE.execute_death(ktest_death_start, ktest_death_end,
-                                        carries_filter ? values.get<std::string_view>("filter")
-                                                       : std::string_view{});
+            auto death_filter = std::string_view{};
+            if (carries_filter) {
+                death_filter = values.get<std::string_view>("filter");
+            }
+            return ACTIVE.execute_death(death_tests(), death_filter);
         }
 
-        auto const *const begin = hsien::section_begin();
-        auto const *const end = hsien::section_end();
-        if (begin == end) {
+        auto const tests = hsien::TestRegistry::linked();
+        if (tests.empty()) {
             log::error("ktest: ERROR no tests are linked into this kernel");
             return 1;
         }
@@ -284,7 +290,7 @@ namespace {
         // The filter a run selects with is the sel word itself when it names
         // no reserved selection: ktest sel=Ktest.* runs what matches.
         auto const filter = all_selected ? std::string_view{} : selection;
-        return ACTIVE.execute(begin, end, ktest_suite_hooks_start, ktest_suite_hooks_end, filter);
+        return ACTIVE.execute(tests, ktest_suite_hooks_start, ktest_suite_hooks_end, filter);
     }
 
 } // namespace
