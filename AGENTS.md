@@ -49,6 +49,8 @@ task needs:
   record's Reference and in the design documents, never in the code.
 - Toolchains come from official upstream releases into `prebuilt/`. Never
   build the dev container or install anything into system directories.
+- Toolchain versions are pinned in `build/prebuilt.json`, and
+  `scripts/fetch_prebuilt.py` installs them; change a tool by changing its pin.
 - Lists describing build products are generated from GN metadata, not kept by
   hand. GN templates are named for their artifact (`rust_library`), not the
   tool.

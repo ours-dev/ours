@@ -109,6 +109,45 @@ To rule the cache out of a failure, build the same commit into a fresh
 `--out` configured with `compiler_launcher=""`: if that passes, suspect the
 cache.
 
+## CI
+
+GitHub Actions runs `python3 scripts/ci.py all` on every push to `main` or
+`baseline/**` and on every pull request into them
+(`.github/workflows/ci.yaml`). That is this skill's `boot_check.py`, with a
+180-second timeout and `--out out/ci.x86`, plus the pre-commit checks over
+every file changed since the merge base, plus the scripts' unit tests. The
+workflow only checks out, restores caches and calls the script, so a red run
+reproduces locally with the same command:
+
+```bash
+python3 scripts/ci.py all --base origin/baseline/20260824
+```
+
+`--base` is the commit the push started from. The run's log prints the merge
+base it judged from (`changed since <sha>`); passing that sha gives the same
+check. `check`, `verify` and `artifacts` also run on their own. Every run
+uploads the images, the boot shim and the logs as an artifact; a failed run
+also uploads the unstripped ELFs.
+
+A new machine gets `prebuilt/` with `python3 scripts/fetch_prebuilt.py`: it
+downloads exactly the versions pinned in `build/prebuilt.json`, checks their
+sha256, and leaves alone a tool directory it did not install. `--check` only
+compares what is there with the pins.
+
+A tag `v*` publishes a GitHub Release (`.github/workflows/release.yaml`):
+both images, their `.debug.json` lists, `bootshim` and `SHA256SUMS`, built
+and booted by the same job. Booting one needs no build directory:
+
+```bash
+gh release download <tag> -R ours-dev/ours -D rel
+(cd rel && shasum -a 256 -c SHA256SUMS)
+SHIM=$PWD/rel/bootshim IMAGE=$PWD/rel/kernel.dev.obi \
+  python3 scripts/qemu_boot.py
+```
+
+CI runs on `macos-26`, not older: the host tools link the system libc++
+against LLVM 23's headers (`docs/repairs/261117/ci.md`).
+
 ## Kernel tests
 
 The kernel's `*.test` commands (`//kernel/commands`) do not run at boot.

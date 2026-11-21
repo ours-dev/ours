@@ -232,3 +232,53 @@ None
 - Why did a release whose every checksum was correct still fail to boot, and why did no CI run before it notice?
 - Why does the release job call `ci.yaml` instead of carrying its own build steps?
 - Why does release mode skip `check`, and what makes that safe?
+
+## Agents are told CI exists and how to reproduce a red run (2026-11-21)
+
+**Files**
+- `.agents/skills/verify/SKILL.md` — a new "CI" section: what `scripts/ci.py all` runs, the local command that reproduces a red run, `fetch_prebuilt.py` for a new machine, booting a release, why the runner is `macos-26`.
+- `CLAUDE.md`, `AGENTS.md` — one line under Repo conventions: toolchain versions are pinned in `build/prebuilt.json` and changed by changing the pin.
+- `.agents/tasks/ci-pipeline/RESULT.md` — the task's result.
+
+**Symptom**
+Latent: an agent in another session seeing a red check, or needing a toolchain on a new machine, had nothing to read that pointed at `scripts/ci.py` or `build/prebuilt.json`, and the obvious moves (bump a version in a script, install a tool by hand, re-run the workflow to see if it passes) are the wrong ones.
+
+**Cause**
+Agents learn this repo's conventions from `CLAUDE.md`, `AGENTS.md` and the skills, not from the code: a workflow file under `.github/` is not something an agent reads before it acts. Without a pointer, the CI built in steps 1 to 4 would be followed only by the session that built it, and a pinned manifest that nobody knows about gets bypassed the first time someone needs a newer compiler.
+
+**Change**
+The `verify` skill gains a CI section, since CI is the skill's own check run elsewhere; the reproduction command is the one the workflow runs:
+
+```bash
+python3 scripts/ci.py all --base origin/baseline/20260824
+```
+
+`CLAUDE.md` and `AGENTS.md` each gain, kept in sync:
+
+```text
+- Toolchain versions are pinned in `build/prebuilt.json`, and
+  `scripts/fetch_prebuilt.py` installs them; change a tool by changing its pin.
+```
+
+Rejected: a separate `ci` skill (it would duplicate `verify`'s check and drift from it; one section in the skill that owns the check is enough).
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `python3 scripts/lint_docs.py --changed` on every document changed: no violations.
+- No code changed, so no build or boot.
+
+**Deliberately not done**
+- No CI status badge or branch protection (non-goals of the design).
+
+**How it was found**
+None
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does the CI description live in the `verify` skill rather than in a skill of its own?
+- What command reproduces a red CI run locally, and where in the run's log is the base it needs?
+- Why is changing a tool's version a one-line edit of `build/prebuilt.json` rather than of `fetch_prebuilt.py`?
